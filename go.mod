@@ -19,6 +19,7 @@ require (
 	github.com/google/btree v1.1.2
 	github.com/grpc-ecosystem/go-grpc-middleware v1.3.0
 	github.com/klauspost/compress v1.20.2
+	github.com/lie-yan/predicate-optimization v0.0.0-20261124004308-1163e63e74df
 	github.com/minio/minio-go/v7 v7.0.73
 	github.com/panjf2000/ants/v2 v2.11.3
 	github.com/pingcap/log v1.1.1-0.20221110025148-ca232912c9f3 // indirect
