@@ -1,0 +1,3 @@
+[submodule "third-party/predicate-optimization"]
+	path = third-party/predicate-optimization
+	url = https://github.com/lie-yan/predicate-optimization
