@@ -422,7 +422,7 @@ func (dr *DeleteRunner) Init(ctx context.Context) error {
 		plan, err := planparserv2.CreateRetrievePlanArgs(dr.schema.SchemaHelper, expr, dr.req.GetExprTemplateValues(), visitorArgs)
 		if err != nil {
 			metrics.ProxyParseExpressionLatency.WithLabelValues(strconv.FormatInt(paramtable.GetNodeID(), 10), "delete", metrics.FailLabel).Observe(float64(time.Since(start).Microseconds()) / 1000.0)
-			return nil, merr.WrapErrAsInputError(dql.WrapPlanCreationError(err, "failed to create delete plan"))
+			return nil, dql.WrapPlanCreationError(err, "failed to create delete plan")
 		}
 		metrics.ProxyParseExpressionLatency.WithLabelValues(strconv.FormatInt(paramtable.GetNodeID(), 10), "delete", metrics.SuccessLabel).Observe(float64(time.Since(start).Microseconds()) / 1000.0)
 		return plan, nil

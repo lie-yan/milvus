@@ -1,0 +1,54 @@
+// This wrapper exists only in the temporary compiler overlay used by this suite.
+func probeRoundTrip(ctx context.Context, input orchestration.AttemptInput, validate func(*planpb.Expr) error) (orchestration.AttemptResult, error) {
+	path := os.Getenv("PREDICATE_TEST_CONTROL")
+	var controls map[string]struct {
+		Directory string
+		Action    string
+	}
+	raw, readErr := os.ReadFile(path)
+	encoded, marshalErr := proto.MarshalOptions{Deterministic: true}.Marshal(input.Original)
+	if readErr != nil || marshalErr != nil || json.Unmarshal(raw, &controls) != nil {
+		return orchestration.RoundTrip(ctx, input, validate)
+	}
+	selected, ok := controls[fmt.Sprintf("%x", sha256.Sum256(encoded))]
+	if !ok {
+		return orchestration.RoundTrip(ctx, input, validate)
+	}
+	claim, err := os.OpenFile(filepath.Join(selected.Directory, "claim"), os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0600)
+	if err != nil {
+		return orchestration.RoundTrip(ctx, input, validate)
+	}
+	claim.Close()
+	publish := func(name string, value any) {
+		data, err := json.Marshal(value)
+		if err != nil {
+			panic(err)
+		}
+		path := filepath.Join(selected.Directory, name)
+		if err = os.WriteFile(path+".tmp", data, 0600); err != nil {
+			panic(err)
+		}
+		if err = os.Rename(path+".tmp", path); err != nil {
+			panic(err)
+		}
+	}
+	publish("entered.json", map[string]any{"pid": os.Getpid(), "independent_context": ctx.Done() == nil})
+	if selected.Action == "pause" {
+		deadline := time.Now().Add(30 * time.Second)
+		for {
+			if _, err := os.Stat(filepath.Join(selected.Directory, "release")); err == nil {
+				break
+			}
+			if time.Now().After(deadline) {
+				panic("predicate test barrier not released")
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
+	}
+	if selected.Action == "unsafe" {
+		input.Original = &planpb.Expr{}
+	}
+	result, err := orchestration.RoundTrip(ctx, input, validate)
+	publish("completed.json", map[string]any{"pid": os.Getpid(), "outcome": result.Outcome(), "abort": orchestration.IsAdapterAbort(err), "code": merr.Code(err)})
+	return result, err
+}

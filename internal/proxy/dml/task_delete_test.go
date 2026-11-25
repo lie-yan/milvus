@@ -4,12 +4,14 @@ import (
 	"context"
 	"testing"
 
+	"github.com/bytedance/mockey"
 	"github.com/cockroachdb/errors"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
 	"github.com/stretchr/testify/suite"
 	"google.golang.org/grpc"
+	"google.golang.org/protobuf/proto"
 
 	"github.com/milvus-io/milvus-proto/go-api/v3/commonpb"
 	"github.com/milvus-io/milvus-proto/go-api/v3/milvuspb"
@@ -20,6 +22,9 @@ import (
 	"github.com/milvus-io/milvus/internal/distributed/streaming"
 	"github.com/milvus-io/milvus/internal/mocks"
 	"github.com/milvus-io/milvus/internal/parser/planparserv2"
+	predopt "github.com/milvus-io/milvus/internal/parser/planparserv2/predicateadapter/integration"
+	"github.com/milvus-io/milvus/internal/parser/planparserv2/predicateadapter/orchestration"
+	"github.com/milvus-io/milvus/internal/parser/planparserv2/predicateadapter/translation"
 	"github.com/milvus-io/milvus/internal/proxy/scheduler"
 	"github.com/milvus-io/milvus/internal/proxy/shardclient"
 	"github.com/milvus-io/milvus/internal/util/streamrpc"
@@ -1175,4 +1180,70 @@ func namespaceEnabledSchema(fields ...*schemapb.FieldSchema) *schemapb.Collectio
 func expectedNamespacePartitionID(namespace string, partitionNames []string, partitionIDs map[string]int64) int64 {
 	idx := typeutil.HashString2Uint32(namespace) % uint32(len(partitionNames))
 	return partitionIDs[partitionNames[idx]]
+}
+
+func (s *DeleteRunnerSuite) TestPredicateOptimizationFailure() {
+	s.Run("translator failure remains a system error", func() {
+		params := paramtable.Get()
+		item := &params.ProxyCfg.EnablePredicateOptimization
+		previous := item.GetValue()
+		s.Require().NoError(params.Save(item.Key, "true"))
+		defer params.Save(item.Key, previous)
+		patch := mockey.Mock(translation.New).Return(nil, merr.ErrServiceUnavailable).Build()
+		defer patch.UnPatch()
+		s.mockCache.EXPECT().GetDatabaseInfo(mock.Anything, mock.Anything).Return(&databaseInfo{DBID: 0}, nil)
+		s.mockCache.EXPECT().GetCollectionID(mock.Anything, mock.Anything, mock.Anything).Return(s.collectionID, nil)
+		s.mockCache.EXPECT().GetCollectionInfo(mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(deleteCollectionInfo(s.schema), nil)
+		dr := DeleteRunner{req: &milvuspb.DeleteRequest{CollectionName: s.collectionName, Expr: "pk > 7"}}
+		dr.metaCache = s.mockCache
+		err := dr.Init(context.Background())
+		s.Require().ErrorIs(err, merr.ErrServiceUnavailable)
+		s.True(predopt.IsFailure(err))
+		status := merr.Status(err)
+		s.Equal(merr.Code(merr.ErrServiceUnavailable), status.GetCode())
+		s.NotEqual("true", status.GetExtraInfo()[merr.InputErrorFlagKey])
+		s.True(status.GetRetriable())
+	})
+}
+
+func (s *DeleteRunnerSuite) TestPredicateOptimizationPlanParity() {
+	params := paramtable.Get()
+	item := &params.ProxyCfg.EnablePredicateOptimization
+	previous := item.GetValue()
+	defer params.Save(item.Key, previous)
+	var legacy *planpb.PlanNode
+	var partitions []int64
+	for _, enabled := range []string{"false", "true"} {
+		s.Run(enabled, func() {
+			s.Require().NoError(params.Save(item.Key, enabled))
+			s.mockCache.EXPECT().GetDatabaseInfo(mock.Anything, mock.Anything).Return(&databaseInfo{DBID: 0}, nil)
+			s.mockCache.EXPECT().GetCollectionID(mock.Anything, mock.Anything, mock.Anything).Return(s.collectionID, nil)
+			s.mockCache.EXPECT().GetCollectionInfo(mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(deleteCollectionInfo(s.schema), nil)
+			s.mockCache.EXPECT().GetPartitionsIndex(mock.Anything, mock.Anything, mock.Anything).Return([]string{"part1", "part2"}, nil)
+			s.mockCache.EXPECT().GetPartitions(mock.Anything, mock.Anything, mock.Anything).Return(map[string]int64{"part1": 100, "part2": 101}, nil)
+			calls := 0
+			var run func(context.Context, orchestration.AttemptInput, func(*planpb.Expr) error) (orchestration.AttemptResult, error)
+			patch := mockey.Mock(orchestration.RoundTrip).Origin(&run).To(func(ctx context.Context, in orchestration.AttemptInput, validate func(*planpb.Expr) error) (orchestration.AttemptResult, error) {
+				calls++
+				result, err := run(ctx, in, validate)
+				s.Require().NoError(err)
+				s.Equal(orchestration.OutcomeTranslated, result.Outcome())
+				return result, err
+			}).Build()
+			defer patch.UnPatch()
+			dr := DeleteRunner{req: &milvuspb.DeleteRequest{CollectionName: s.collectionName, Expr: "pk in [1, 2] and non_pk == {tenant}", ExprTemplateValues: map[string]*schemapb.TemplateValue{"tenant": {Val: &schemapb.TemplateValue_Int64Val{Int64Val: 7}}}}}
+			dr.metaCache = s.mockCache
+			s.Require().NoError(dr.Init(context.Background()))
+			if enabled == "false" {
+				s.Zero(calls)
+				legacy = proto.Clone(dr.plan).(*planpb.PlanNode)
+				partitions = append([]int64(nil), dr.partitionIDs...)
+				s.Require().Len(partitions, 1)
+			} else {
+				s.Equal(1, calls)
+				s.True(proto.Equal(legacy, dr.plan))
+				s.Equal(partitions, dr.partitionIDs)
+			}
+		})
+	}
 }

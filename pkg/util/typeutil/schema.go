@@ -483,6 +483,12 @@ func CreateSchemaHelper(schema *schemapb.CollectionSchema) (*SchemaHelper, error
 	return &schemaHelper, nil
 }
 
+// Returns the collection's top-level fields, excluding flattened struct-array children.
+// The borrowed slice and field nodes must not be mutated.
+func (helper *SchemaHelper) TopLevelFields() []*schemapb.FieldSchema {
+	return helper.schema.GetFields()
+}
+
 // GetTimezone returns the timezone string associated with the schema.
 func (helper *SchemaHelper) GetTimezone() string {
 	return helper.timezone

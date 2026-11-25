@@ -2861,6 +2861,7 @@ type proxyConfig struct {
 	ExprParseCacheMaxEntries    ParamItem `refreshable:"false"`
 	ExprParseCacheMaxBytes      ParamItem `refreshable:"false"`
 	ExprParseCacheMaxEntryBytes ParamItem `refreshable:"false"`
+	EnablePredicateOptimization ParamItem `refreshable:"true"`
 
 	TimeTickInterval               ParamItem `refreshable:"false"`
 	HealthCheckTimeout             ParamItem `refreshable:"true"`
@@ -2949,6 +2950,15 @@ func positiveProxyLimitFormatter(defaultValue string) func(string) string {
 }
 
 func (p *proxyConfig) init(base *BaseTable) {
+	p.EnablePredicateOptimization = ParamItem{
+		Key:          "proxy.enablePredicateOptimization",
+		Version:      "3.0.6",
+		DefaultValue: "false",
+		Doc:          "Temporary switch for predicate optimization on nonblank expressions reaching the shared parser. Refreshable; captured once per predicate parse. Remove after integration validation is complete.",
+		Export:       true,
+	}
+	p.EnablePredicateOptimization.Init(base.mgr)
+
 	p.ExprParseCacheEnabled = ParamItem{
 		Key:          "proxy.exprParseCache.enabled",
 		Version:      "3.0.6",

@@ -13,6 +13,7 @@ import (
 	"github.com/milvus-io/milvus-proto/go-api/v3/schemapb"
 	"github.com/milvus-io/milvus/internal/json"
 	planparserv2 "github.com/milvus-io/milvus/internal/parser/planparserv2/generated"
+	"github.com/milvus-io/milvus/internal/parser/planparserv2/predicateadapter/integration"
 	"github.com/milvus-io/milvus/internal/parser/planparserv2/rewriter"
 	"github.com/milvus-io/milvus/internal/util/function/rerank"
 	"github.com/milvus-io/milvus/pkg/v3/common"
@@ -228,6 +229,8 @@ func validateElementFilterPlacement(expr *planpb.Expr) error {
 }
 
 func parseExprInner(schema *typeutil.SchemaHelper, exprStr string, exprTemplateValues map[string]*schemapb.TemplateValue, visitorArgs *ParserVisitorArgs) (*planpb.Expr, error) {
+	// Capture once: a runtime refresh affects subsequent parses only.
+	predicateOptimizationEnabled := paramtable.Get().ProxyCfg.EnablePredicateOptimization.GetAsBool()
 	expr, err := parseExprTemplateInner(schema, exprStr, visitorArgs)
 	if err != nil {
 		return nil, err
@@ -252,6 +255,9 @@ func parseExprInner(schema *typeutil.SchemaHelper, exprStr string, exprTemplateV
 	expr = rewriter.RewriteExpr(expr)
 	if err := validateElementFilterPlacement(expr); err != nil {
 		return nil, err
+	}
+	if predicateOptimizationEnabled && !isEmptyExpression(exprStr) {
+		return integration.Apply(schema, expr, validateElementFilterPlacement)
 	}
 	return expr, nil
 }

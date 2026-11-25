@@ -447,6 +447,34 @@ func TestSchema_GetVectorFieldSchemas(t *testing.T) {
 	})
 }
 
+func TestSchemaHelperTopLevelFields(t *testing.T) {
+	schema := &schemapb.CollectionSchema{
+		Fields: []*schemapb.FieldSchema{
+			{FieldID: 100, Name: "id", DataType: schemapb.DataType_Int64},
+			{FieldID: 101, Name: "flag", DataType: schemapb.DataType_Bool},
+		},
+		StructArrayFields: []*schemapb.StructArrayFieldSchema{{
+			FieldID: 200, Name: "items", Fields: []*schemapb.FieldSchema{
+				{FieldID: 201, Name: "items[value]", DataType: schemapb.DataType_Int64},
+			},
+		}},
+	}
+	helper, err := CreateSchemaHelper(schema)
+	require.NoError(t, err)
+	fields := helper.TopLevelFields()
+	require.Len(t, fields, len(schema.Fields))
+	for i, field := range fields {
+		require.Same(t, schema.Fields[i], field)
+		resolved, err := helper.GetFieldFromID(field.GetFieldID())
+		require.NoError(t, err)
+		require.Same(t, field, resolved)
+	}
+	child, err := helper.GetFieldFromID(201)
+	require.NoError(t, err)
+	require.Same(t, schema.StructArrayFields[0].Fields[0], child)
+	require.NotContains(t, fields, child)
+}
+
 func TestSchemaHelper_GetDynamicField(t *testing.T) {
 	t.Run("with_dynamic_schema", func(t *testing.T) {
 		sch := &schemapb.CollectionSchema{

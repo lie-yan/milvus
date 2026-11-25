@@ -13,9 +13,9 @@ import (
 )
 
 // Translates one post-legacy predicate and transfers only a complete accepted candidate.
-// Borrowed source/schema must stay immutable; placement must synchronously read without mutation or retention.
-func RoundTrip(ctx context.Context, input AttemptInput, checkPlacement func(*planpb.Expr) error) (AttemptResult, error) {
-	return roundTrip(ctx, input, checkPlacement, adapterruntime.SharedRuntime, newTranslator)
+// Borrowed source/schema must stay immutable; the expression validator must synchronously read without mutation or retention.
+func RoundTrip(ctx context.Context, input AttemptInput, validateExpr func(*planpb.Expr) error) (AttemptResult, error) {
+	return roundTrip(ctx, input, validateExpr, adapterruntime.SharedRuntime, newTranslator)
 }
 
 // Minimal private seam for isolated stage faults; production always uses the paired translator.
@@ -32,11 +32,11 @@ func newTranslator(input AttemptInput, runtime *adapterruntime.Runtime) (pairedT
 }
 
 // Shares the production sequence with tests without mutable global hooks.
-func roundTrip(ctx context.Context, input AttemptInput, checkPlacement func(*planpb.Expr) error,
+func roundTrip(ctx context.Context, input AttemptInput, validateExpr func(*planpb.Expr) error,
 	load func() (*adapterruntime.Runtime, error),
 	build func(AttemptInput, *adapterruntime.Runtime) (pairedTranslator, error),
 ) (AttemptResult, error) {
-	if proceed, result, err := checkGate(ctx, input, checkPlacement); !proceed {
+	if proceed, result, err := checkGate(ctx, input, validateExpr); !proceed {
 		return result, err
 	}
 	report := Report{}
@@ -78,7 +78,7 @@ func roundTrip(ctx context.Context, input AttemptInput, checkPlacement func(*pla
 	if err := ctx.Err(); err != nil {
 		return newAbortResult(StagePlacement, report, err)
 	}
-	if err := checkPlacement(candidate); err != nil {
+	if err := validateExpr(candidate); err != nil {
 		return newFailureResult(ctx, StagePlacement, report, err, true)
 	}
 	if err := ctx.Err(); err != nil {

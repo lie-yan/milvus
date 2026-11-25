@@ -23,6 +23,7 @@ import (
 	"google.golang.org/protobuf/proto"
 
 	"github.com/milvus-io/milvus/internal/parser/planparserv2"
+	predopt "github.com/milvus-io/milvus/internal/parser/planparserv2/predicateadapter/integration"
 	"github.com/milvus-io/milvus/pkg/v3/proto/planpb"
 	"github.com/milvus-io/milvus/pkg/v3/util/merr"
 	"github.com/milvus-io/milvus/pkg/v3/util/paramtable"
@@ -43,6 +44,10 @@ import (
 // own PR: REST, Go SDK and Delete expectations updated together, plus a
 // release note.
 func WrapPlanCreationError(err error, context string) error {
+	// Integration failures describe internal assembly/translation, not request input.
+	if predopt.IsFailure(err) {
+		return merr.Wrap(err, context)
+	}
 	// Membership-filter size checks are a new, more specific public error. Do
 	// not collapse them into the legacy ParameterInvalid projection below.
 	if errors.Is(err, merr.ErrParameterTooLarge) {

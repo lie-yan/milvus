@@ -2,7 +2,7 @@ package runtime
 
 import "sync"
 
-// Process-lifetime initialization state; no parser or request path invokes it yet.
+// Process-lifetime initialization state, acquired only when an adapter attempt starts.
 var sharedRuntime runtimeLoader
 
 // Returns one fully constructed process-wide runtime, caching either success or setup failure until restart.

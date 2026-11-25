@@ -9,7 +9,7 @@ import (
 
 // Returns proceed=true only for a live attempt with all required inputs.
 // A passing gate is not a translated result; the caller must run the complete operation.
-func checkGate(ctx context.Context, input AttemptInput, checkPlacement func(*planpb.Expr) error) (bool, AttemptResult, error) {
+func checkGate(ctx context.Context, input AttemptInput, validateExpr func(*planpb.Expr) error) (bool, AttemptResult, error) {
 	report := Report{}
 	if ctx == nil {
 		result, err := newAbortResult(StageGate, report, merr.WrapErrServiceInternalMsg("predicate orchestration: missing request context"))
@@ -25,8 +25,8 @@ func checkGate(ctx context.Context, input AttemptInput, checkPlacement func(*pla
 		missing = "source expression"
 	case input.SchemaView == nil:
 		missing = "schema view"
-	case checkPlacement == nil:
-		missing = "placement validator"
+	case validateExpr == nil:
+		missing = "expression validator"
 	}
 	if missing != "" {
 		result, err := newFailureResult(ctx, StageGate, report,

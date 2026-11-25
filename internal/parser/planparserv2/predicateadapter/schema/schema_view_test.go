@@ -28,7 +28,7 @@ func schemaFixture(t *testing.T) (*schemapb.CollectionSchema, *typeutil.SchemaHe
 	}
 	helper, err := typeutil.CreateSchemaHelper(schema)
 	require.NoError(t, err)
-	view, err := NewView(helper, schema.GetFields())
+	view, err := NewView(helper, helper.TopLevelFields())
 	require.NoError(t, err)
 	return schema, helper, view
 }
@@ -103,7 +103,7 @@ func TestSchemaViewPinnedMembership(t *testing.T) {
 	require.NoError(t, err)
 	_, err = NewView(nextHelper, schema.GetFields())
 	require.ErrorIs(t, err, merr.ErrServiceInternal)
-	nextView, err := NewView(nextHelper, replacement.GetFields())
+	nextView, err := NewView(nextHelper, nextHelper.TopLevelFields())
 	require.NoError(t, err)
 	info := columnFixture(schema.Fields[0])
 	field, supported, err := view.CheckColumn(info)

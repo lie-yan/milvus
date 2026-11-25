@@ -21,6 +21,7 @@ import (
 	"strconv"
 	"testing"
 
+	"github.com/bytedance/mockey"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/protobuf/proto"
@@ -29,7 +30,11 @@ import (
 	"github.com/milvus-io/milvus-proto/go-api/v3/milvuspb"
 	"github.com/milvus-io/milvus-proto/go-api/v3/schemapb"
 	"github.com/milvus-io/milvus/client/v3/membership/sbbf"
+	"github.com/milvus-io/milvus/internal/parser/planparserv2"
+	predopt "github.com/milvus-io/milvus/internal/parser/planparserv2/predicateadapter/integration"
+	"github.com/milvus-io/milvus/internal/parser/planparserv2/predicateadapter/translation"
 	"github.com/milvus-io/milvus/internal/proxy/metacache"
+	"github.com/milvus-io/milvus/internal/proxy/taskmodel"
 	"github.com/milvus-io/milvus/pkg/v3/common"
 	"github.com/milvus-io/milvus/pkg/v3/proto/internalpb"
 	"github.com/milvus-io/milvus/pkg/v3/proto/planpb"
@@ -37,6 +42,7 @@ import (
 	"github.com/milvus-io/milvus/pkg/v3/util/metric"
 	"github.com/milvus-io/milvus/pkg/v3/util/paramtable"
 	"github.com/milvus-io/milvus/pkg/v3/util/timerecord"
+	"github.com/milvus-io/milvus/pkg/v3/util/typeutil"
 )
 
 func TestWrapPlanCreationError(t *testing.T) {
@@ -61,10 +67,11 @@ func TestWrapPlanCreationError(t *testing.T) {
 
 	t.Run("delete keeps its InputError classification", func(t *testing.T) {
 		cause := merr.WrapErrQueryPlanMsg("invalid expression")
-		err := merr.WrapErrAsInputError(WrapPlanCreationError(cause, "failed to create delete plan"))
+		err := WrapPlanCreationError(cause, "failed to create delete plan")
 		require.Error(t, err)
 		assert.ErrorIs(t, err, merr.ErrQueryPlan)
 		assert.Equal(t, int32(1100), merr.Code(err))
+		assert.Equal(t, merr.InputError, merr.GetErrorType(err))
 	})
 
 	t.Run("preserves parameter too large", func(t *testing.T) {
@@ -75,6 +82,69 @@ func TestWrapPlanCreationError(t *testing.T) {
 		assert.Equal(t, int32(1102), merr.Code(err))
 		assert.Equal(t, merr.InputError, merr.GetErrorType(err))
 	})
+}
+
+func TestPredicateOptimizationPlanErrorProjection(t *testing.T) {
+	params := paramtable.Get()
+	item := &params.ProxyCfg.EnablePredicateOptimization
+	previous := item.GetValue()
+	require.NoError(t, params.Save(item.Key, "true"))
+	t.Cleanup(func() { require.NoError(t, params.Save(item.Key, previous)) })
+	helper, err := typeutil.CreateSchemaHelper(&schemapb.CollectionSchema{Fields: []*schemapb.FieldSchema{
+		{FieldID: 100, Name: "pk", DataType: schemapb.DataType_Int64, IsPrimaryKey: true},
+		{FieldID: 101, Name: "v", DataType: schemapb.DataType_FloatVector, TypeParams: []*commonpb.KeyValuePair{{Key: "dim", Value: "4"}}},
+	}})
+	require.NoError(t, err)
+	for _, fault := range []string{"view setup", "translator setup", "unsafe source"} {
+		t.Run(fault, func(t *testing.T) {
+			cause := merr.ErrServiceInternal
+			switch fault {
+			case "view setup":
+				fields := proto.Clone(&schemapb.CollectionSchema{Fields: helper.TopLevelFields()}).(*schemapb.CollectionSchema).Fields
+				patch := mockey.Mock((*typeutil.SchemaHelper).TopLevelFields).Return(fields).Build()
+				defer patch.UnPatch()
+			case "translator setup":
+				cause = merr.ErrServiceUnavailable
+				patch := mockey.Mock(translation.New).Return(nil, cause).Build()
+				defer patch.UnPatch()
+			case "unsafe source":
+				var admit func(*translation.Translator, context.Context, *planpb.Expr) (*translation.AdmissionPlan, error)
+				patch := mockey.Mock((*translation.Translator).Admit).Origin(&admit).To(func(tr *translation.Translator, ctx context.Context, _ *planpb.Expr) (*translation.AdmissionPlan, error) {
+					return admit(tr, ctx, &planpb.Expr{})
+				}).Build()
+				defer patch.UnPatch()
+			}
+			for _, caller := range []string{"query", "search", "scorer"} {
+				t.Run(caller, func(t *testing.T) {
+					var err error
+					if caller == "query" {
+						_, err = planparserv2.CreateRetrievePlan(helper, "pk > 7", nil)
+					} else {
+						expression := "pk > 7"
+						var score *schemapb.FunctionScore
+						if caller == "scorer" {
+							expression = ""
+							score = &schemapb.FunctionScore{Functions: []*schemapb.FunctionSchema{{Name: "boost", Type: schemapb.FunctionType_Rerank, Params: []*commonpb.KeyValuePair{{Key: "reranker", Value: "boost"}, {Key: "filter", Value: "pk > 7"}, {Key: "weight", Value: "2"}}}}}
+						}
+						_, err = planparserv2.CreateSearchPlanArgs(helper, expression, "v", &planpb.QueryInfo{Topk: 10, MetricType: "L2", SearchParams: "{}", GroupByFieldId: -1}, nil, score, nil)
+					}
+					require.Error(t, err)
+					err = WrapPlanCreationError(err, "failed to create plan")
+					condition := taskmodel.NewTaskCondition(context.Background())
+					condition.Notify(err)
+					err = condition.WaitToFinish()
+					require.ErrorIs(t, err, cause)
+					require.True(t, predopt.IsFailure(err))
+					status := merr.Status(err)
+					require.Equal(t, merr.Code(cause), status.GetCode())
+					require.NotEqual(t, "true", status.GetExtraInfo()[merr.InputErrorFlagKey])
+					require.Equal(t, merr.IsRetryableErr(cause), status.GetRetriable())
+				})
+			}
+		})
+	}
+	// An identical code without integration provenance retains the legacy projection.
+	require.Equal(t, int32(1100), merr.Code(WrapPlanCreationError(merr.ErrServiceInternal, "ordinary parser")))
 }
 
 func bloomPlanSizeTestLeaf(blob []byte) *planpb.Expr {
@@ -242,6 +312,19 @@ func bloomPlanSizeSearchParams() []*commonpb.KeyValuePair {
 }
 
 func TestSearchTaskMembershipFilterPlanSizeLimit(t *testing.T) {
+	params := paramtable.Get()
+	item := &params.ProxyCfg.EnablePredicateOptimization
+	previous := item.GetValue()
+	t.Cleanup(func() { require.NoError(t, params.Save(item.Key, previous)) })
+	for _, enabled := range []string{"false", "true"} {
+		t.Run(enabled, func(t *testing.T) {
+			require.NoError(t, params.Save(item.Key, enabled))
+			testSearchTaskMembershipFilterPlanSizeLimit(t)
+		})
+	}
+}
+
+func testSearchTaskMembershipFilterPlanSizeLimit(t *testing.T) {
 	params := paramtable.Get()
 	key := params.ProxyCfg.MaxMembershipFilterPlanSize.Key
 	params.Save(key, "1")

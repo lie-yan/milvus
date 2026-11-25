@@ -2563,3 +2563,16 @@ func TestCredentialBrokerRejectsInvalidStartupQuery(t *testing.T) {
 		bt.mgr.Close()
 	}
 }
+
+func TestPredicateOptimizationConfigRefresh(t *testing.T) {
+	params := &ComponentParam{}
+	base := NewBaseTable(Files([]string{}), SkipRemote(true), SkipEnv(true))
+	require.NoError(t, base.Save("localStorage.path", t.TempDir()))
+	params.Init(base)
+	item := &params.ProxyCfg.EnablePredicateOptimization
+	require.False(t, item.GetAsBool())
+	for _, value := range []string{"true", "false", "true"} {
+		require.NoError(t, params.Save(item.Key, value))
+		require.Equal(t, value == "true", item.GetAsBool())
+	}
+}

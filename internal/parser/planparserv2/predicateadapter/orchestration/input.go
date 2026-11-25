@@ -7,7 +7,7 @@ import (
 )
 
 // Borrowed per-predicate inputs, stable until the synchronous operation returns.
-// Request context and trusted read-only placement validation are separate operation arguments.
+// Request context and trusted read-only expression validation are separate operation arguments.
 type AttemptInput struct {
 	// Post-legacy expression after original placement validation; nil does not mean TRUE.
 	Original *planpb.Expr

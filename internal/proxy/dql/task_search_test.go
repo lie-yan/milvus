@@ -42,6 +42,7 @@ import (
 	"github.com/milvus-io/milvus-proto/go-api/v3/milvuspb"
 	"github.com/milvus-io/milvus-proto/go-api/v3/schemapb"
 	"github.com/milvus-io/milvus/internal/mocks"
+	"github.com/milvus-io/milvus/internal/parser/planparserv2/predicateadapter/orchestration"
 	"github.com/milvus-io/milvus/internal/proxy/metacache"
 	"github.com/milvus-io/milvus/internal/proxy/search_agg"
 	"github.com/milvus-io/milvus/internal/proxy/shardclient"
@@ -8205,4 +8206,92 @@ func TestSearchTask_SearchRequeryPolicy(t *testing.T) {
 		assert.Contains(t, plan.GetOutputFieldIds(), titleFieldID)
 		assert.Contains(t, plan.GetOutputFieldIds(), int64(100))
 	})
+}
+
+func TestPredicateOptimizationSearchCallers(t *testing.T) {
+	params := paramtable.Get()
+	item := &params.ProxyCfg.EnablePredicateOptimization
+	previous := item.GetValue()
+	t.Cleanup(func() { require.NoError(t, params.Save(item.Key, previous)) })
+	schema, _ := bloomPlanSizeIntegrationFixture(t)
+	translated, unsupported := orchestration.OutcomeTranslated, orchestration.OutcomeUnsupported
+	for _, tc := range []struct {
+		name, main, scorer string
+		outcomes           []orchestration.Outcome
+	}{
+		{"both translated", "pk > {threshold}", "pk < 20", []orchestration.Outcome{translated, translated}},
+		{"retained main", "pk + 1 > 7", "pk < 20", []orchestration.Outcome{unsupported, translated}},
+		{"retained scorer", "pk > 7", "pk + 1 < 20", []orchestration.Outcome{translated, unsupported}},
+		{"blank main", "", "pk < 20", []orchestration.Outcome{translated}},
+		{"no scorer", "pk > 7", "", []orchestration.Outcome{translated}},
+		{"blank without scorer", "", "", nil},
+	} {
+		for _, hybrid := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/hybrid=%t", tc.name, hybrid), func(t *testing.T) {
+				var legacy []*planpb.PlanNode
+				for _, enabled := range []bool{false, true} {
+					t.Run(strconv.FormatBool(enabled), func(t *testing.T) {
+						require.NoError(t, params.Save(item.Key, strconv.FormatBool(enabled)))
+						var observed []orchestration.Outcome
+						var run func(context.Context, orchestration.AttemptInput, func(*planpb.Expr) error) (orchestration.AttemptResult, error)
+						patch := mockey.Mock(orchestration.RoundTrip).Origin(&run).To(func(ctx context.Context, in orchestration.AttemptInput, validate func(*planpb.Expr) error) (orchestration.AttemptResult, error) {
+							before := proto.Clone(in.Original)
+							result, err := run(ctx, in, validate)
+							require.NoError(t, err)
+							require.True(t, proto.Equal(before, in.Original))
+							observed = append(observed, result.Outcome())
+							return result, err
+						}).Build()
+						defer patch.UnPatch()
+						values := map[string]*schemapb.TemplateValue{"threshold": {Val: &schemapb.TemplateValue_Int64Val{Int64Val: 7}}}
+						request := &milvuspb.SearchRequest{CollectionName: schema.GetName(), Dsl: tc.main, SearchParams: bloomPlanSizeSearchParams(), ExprTemplateValues: values, Nq: 1}
+						if tc.scorer != "" {
+							request.FunctionScore = &schemapb.FunctionScore{Functions: []*schemapb.FunctionSchema{{Name: "boost", Type: schemapb.FunctionType_Rerank, Params: []*commonpb.KeyValuePair{{Key: "reranker", Value: "boost"}, {Key: "filter", Value: tc.scorer}, {Key: "weight", Value: "2"}}}}}
+						}
+						task := &SearchTask{ctx: context.Background(), collectionName: schema.GetName(), schema: schema, request: request, SearchRequest: &internalpb.SearchRequest{CollectionID: 1, DslType: commonpb.DslType_BoolExprV1, IsAdvanced: hybrid}, tr: timerecord.NewTimeRecorder("predicate-search")}
+						var serialized [][]byte
+						expected := append([]orchestration.Outcome(nil), tc.outcomes...)
+						if hybrid {
+							request.SearchParams = []*commonpb.KeyValuePair{{Key: LimitKey, Value: "10"}}
+							request.SubReqs = []*milvuspb.SubSearchRequest{
+								{Nq: 1, Dsl: tc.main, SearchParams: bloomPlanSizeSearchParams(), ExprTemplateValues: values},
+								{Nq: 1, Dsl: "pk + 1 > 9", SearchParams: bloomPlanSizeSearchParams(), ExprTemplateValues: values},
+							}
+							expected = append(expected, unsupported)
+							if tc.scorer != "" {
+								expected = append(expected, tc.outcomes[len(tc.outcomes)-1])
+							}
+							require.NoError(t, task.initAdvancedSearchRequest(task.ctx))
+							for _, sub := range task.SubReqs {
+								serialized = append(serialized, sub.SerializedExprPlan)
+							}
+						} else {
+							require.NoError(t, task.initSearchRequest(task.ctx))
+							serialized = [][]byte{task.SerializedExprPlan}
+						}
+						if enabled {
+							require.Equal(t, expected, observed)
+						} else {
+							require.Empty(t, observed)
+						}
+						var plans []*planpb.PlanNode
+						for _, bytes := range serialized {
+							plan := &planpb.PlanNode{}
+							require.NoError(t, proto.Unmarshal(bytes, plan))
+							require.Equal(t, int64(101), plan.GetVectorAnns().GetFieldId(), "use the task's bound schema")
+							plans = append(plans, plan)
+						}
+						if !enabled {
+							legacy = plans
+						} else {
+							require.Len(t, plans, len(legacy))
+							for i := range plans {
+								require.True(t, proto.Equal(legacy[i], plans[i]), "empty pipeline must preserve main/scorer plans")
+							}
+						}
+					})
+				}
+			})
+		}
+	}
 }

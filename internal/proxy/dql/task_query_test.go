@@ -19,6 +19,7 @@ import (
 	"context"
 	"fmt"
 	"math"
+	"strconv"
 	"sync"
 	"testing"
 	"time"
@@ -29,19 +30,25 @@ import (
 	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/grpc"
+	"google.golang.org/protobuf/proto"
 
 	"github.com/milvus-io/milvus-proto/go-api/v3/commonpb"
 	"github.com/milvus-io/milvus-proto/go-api/v3/milvuspb"
 	"github.com/milvus-io/milvus-proto/go-api/v3/schemapb"
 	"github.com/milvus-io/milvus/internal/mocks"
+	"github.com/milvus-io/milvus/internal/parser/planparserv2"
+	"github.com/milvus-io/milvus/internal/parser/planparserv2/predicateadapter/orchestration"
+	adapterruntime "github.com/milvus-io/milvus/internal/parser/planparserv2/predicateadapter/runtime"
 	"github.com/milvus-io/milvus/internal/proxy/metacache"
 	"github.com/milvus-io/milvus/internal/proxy/shardclient"
 	"github.com/milvus-io/milvus/internal/types"
+	"github.com/milvus-io/milvus/internal/util/exprutil"
 	"github.com/milvus-io/milvus/internal/util/reduce"
 	"github.com/milvus-io/milvus/internal/views/queryclient"
 	"github.com/milvus-io/milvus/pkg/v3/common"
 	"github.com/milvus-io/milvus/pkg/v3/mlog"
 	"github.com/milvus-io/milvus/pkg/v3/proto/internalpb"
+	"github.com/milvus-io/milvus/pkg/v3/proto/planpb"
 	"github.com/milvus-io/milvus/pkg/v3/proto/querypb"
 	"github.com/milvus-io/milvus/pkg/v3/util/funcutil"
 	"github.com/milvus-io/milvus/pkg/v3/util/merr"
@@ -2168,6 +2175,125 @@ func Test_queryTask_createPlan(t *testing.T) {
 		err := tsk.createPlan(context.TODO())
 		assert.Error(t, err)
 	})
+}
+
+func TestPredicateOptimizationRetrieveCallers(t *testing.T) {
+	params := paramtable.Get()
+	item := &params.ProxyCfg.EnablePredicateOptimization
+	previous := item.GetValue()
+	t.Cleanup(func() { require.NoError(t, params.Save(item.Key, previous)) })
+	schema := mustNewSchemaInfo(&schemapb.CollectionSchema{Fields: []*schemapb.FieldSchema{
+		{FieldID: 100, Name: "pk", DataType: schemapb.DataType_Int64, IsPrimaryKey: true},
+		{FieldID: 101, Name: "tenant", DataType: schemapb.DataType_Int64, IsPartitionKey: true},
+	}})
+	for _, caller := range []string{"query", "internal", "count", "count helper", "direct", "prebuilt"} {
+		for _, input := range []string{"tenant in [2, 3] and pk > 7", "pk > {threshold}", "pk + 1 > 7", "", "   "} {
+			t.Run(caller+"/"+input, func(t *testing.T) {
+				values := map[string]*schemapb.TemplateValue{"threshold": {Val: &schemapb.TemplateValue_Int64Val{Int64Val: 7}}}
+				var legacy *planpb.PlanNode
+				for _, mode := range []string{"off", "translated", "runtime unavailable"} {
+					t.Run(mode, func(t *testing.T) {
+						enabled := mode != "off"
+						require.NoError(t, params.Save(item.Key, strconv.FormatBool(enabled)))
+						if mode == "runtime unavailable" {
+							patch := mockey.Mock(adapterruntime.SharedRuntime).Return(nil, merr.ErrServiceUnavailable).Build()
+							defer patch.UnPatch()
+						}
+						calls := 0
+						var run func(context.Context, orchestration.AttemptInput, func(*planpb.Expr) error) (orchestration.AttemptResult, error)
+						patch := mockey.Mock(orchestration.RoundTrip).Origin(&run).To(func(ctx context.Context, in orchestration.AttemptInput, validate func(*planpb.Expr) error) (orchestration.AttemptResult, error) {
+							calls++
+							before := proto.Clone(in.Original)
+							result, err := run(ctx, in, validate)
+							require.NoError(t, err)
+							require.True(t, proto.Equal(before, in.Original))
+							if mode == "runtime unavailable" {
+								require.Equal(t, orchestration.OutcomeRuntimeUnavailable, result.Outcome())
+							} else if input == "pk + 1 > 7" {
+								require.Equal(t, orchestration.OutcomeUnsupported, result.Outcome())
+							} else {
+								require.Equal(t, orchestration.OutcomeTranslated, result.Outcome())
+								require.NotSame(t, in.Original, result.Candidate())
+							}
+							return result, err
+						}).Build()
+						defer patch.UnPatch()
+						var plan *planpb.PlanNode
+						var err error
+						switch caller {
+						case "count helper":
+							plan, err = createCntPlan(input, schema.SchemaHelper, values)
+						case "direct":
+							plan, err = planparserv2.CreateRetrievePlan(schema.SchemaHelper, input, values)
+						default:
+							outputs := []string{"pk"}
+							if caller == "count" {
+								outputs = []string{"count(*)"}
+							}
+							task := &QueryTask{schema: schema, RetrieveRequest: &internalpb.RetrieveRequest{}, queryParams: &queryParams{}, internalTask: caller == "internal", request: &milvuspb.QueryRequest{Expr: input, ExprTemplateValues: values, OutputFields: outputs}}
+							if caller == "prebuilt" {
+								task.plan = &planpb.PlanNode{Node: &planpb.PlanNode_Query{Query: &planpb.QueryPlanNode{Predicates: nonPartitionKeyPredicate(100, schemapb.DataType_Int64)}}}
+								task.request.Expr = "invalid syntax ("
+							}
+							err = task.createPlan(context.Background())
+							plan = task.plan
+						}
+						require.NoError(t, err)
+						expectedCalls := 0
+						if enabled && input != "" && input != "   " && caller != "prebuilt" {
+							expectedCalls = 1
+						}
+						require.Equal(t, expectedCalls, calls)
+						if !enabled {
+							legacy = proto.Clone(plan).(*planpb.PlanNode)
+						} else {
+							require.True(t, proto.Equal(legacy, plan), "empty pipeline must preserve the complete retrieve plan")
+						}
+						bytes, _, err := MarshalPlanWithMembershipFilterSizeLimit(plan, 0)
+						require.NoError(t, err)
+						decoded := &planpb.PlanNode{}
+						require.NoError(t, proto.Unmarshal(bytes, decoded))
+						require.True(t, proto.Equal(plan, decoded))
+						predicate, err := exprutil.ParseExprFromPlan(plan)
+						require.NoError(t, err)
+						keys := exprutil.ParseKeys(predicate, exprutil.PartitionKey)
+						if input == "tenant in [2, 3] and pk > 7" && caller != "prebuilt" {
+							require.Len(t, keys, 2)
+							require.Equal(t, int64(2), keys[0].GetInt64Val())
+							require.Equal(t, int64(3), keys[1].GetInt64Val())
+						}
+					})
+				}
+			})
+		}
+	}
+}
+
+func TestPredicateOptimizationRetrieveCancellation(t *testing.T) {
+	params := paramtable.Get()
+	item := &params.ProxyCfg.EnablePredicateOptimization
+	previous := item.GetValue()
+	require.NoError(t, params.Save(item.Key, "true"))
+	t.Cleanup(func() { require.NoError(t, params.Save(item.Key, previous)) })
+	schema := mustNewSchemaInfo(&schemapb.CollectionSchema{Fields: []*schemapb.FieldSchema{{FieldID: 100, Name: "pk", DataType: schemapb.DataType_Int64, IsPrimaryKey: true}}})
+	requestCtx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	var run func(context.Context, orchestration.AttemptInput, func(*planpb.Expr) error) (orchestration.AttemptResult, error)
+	patch := mockey.Mock(orchestration.RoundTrip).Origin(&run).To(func(ctx context.Context, in orchestration.AttemptInput, validate func(*planpb.Expr) error) (orchestration.AttemptResult, error) {
+		cancel()
+		require.Nil(t, ctx.Done())
+		result, err := run(ctx, in, validate)
+		require.NoError(t, err)
+		require.Equal(t, orchestration.OutcomeTranslated, result.Outcome())
+		return result, err
+	}).Build()
+	defer patch.UnPatch()
+	task := &QueryTask{schema: schema, RetrieveRequest: &internalpb.RetrieveRequest{}, queryParams: &queryParams{}, request: &milvuspb.QueryRequest{Expr: "pk > 7", OutputFields: []string{"pk"}}}
+	require.NoError(t, task.createPlan(requestCtx))
+	require.NotNil(t, task.plan.GetQuery().GetPredicates())
+	// The request waiter still observes cancellation while translation finishes synchronously.
+	condition := NewTaskCondition(requestCtx)
+	require.ErrorIs(t, condition.WaitToFinish(), context.Canceled)
 }
 
 func TestQueryTask_IDs2Expr(t *testing.T) {
