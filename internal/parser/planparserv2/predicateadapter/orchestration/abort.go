@@ -53,12 +53,12 @@ func newFailureResult(ctx context.Context, stage Stage, report Report, cause err
 		}
 		stage = mapped
 		switch failure.Kind() {
-		case translation.UnsupportedSource:
-			if stage == StageAdmission {
+		case translation.UnsupportedExpression:
+			if stage == StageImport || stage == StageExport {
 				outcome = OutcomeUnsupported
 			}
 		case translation.TranslationDefect:
-			if stage == StageImport || stage == StageExport || stage == StageCandidateValidation {
+			if stage == StageImport || stage == StageExport {
 				outcome = OutcomeRetainedAfterFailure
 			}
 		}
@@ -79,14 +79,10 @@ func newFailureResult(ctx context.Context, stage Stage, report Report, cause err
 // Maps distinct stage enums explicitly rather than relying on their numeric layout.
 func stageFromTranslation(stage translation.Stage) (Stage, bool) {
 	switch stage {
-	case translation.StageAdmission:
-		return StageAdmission, true
 	case translation.StageImport:
 		return StageImport, true
 	case translation.StageExport:
 		return StageExport, true
-	case translation.StageCandidateValidation:
-		return StageCandidateValidation, true
 	default:
 		return StageUnknown, false
 	}

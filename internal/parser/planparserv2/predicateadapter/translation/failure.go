@@ -10,8 +10,8 @@ import (
 type FailureKind uint8
 
 const (
-	// Unsupported source coverage with no successful partial translation.
-	UnsupportedSource FailureKind = iota + 1
+	// Unsupported Import or Export coverage with no successful partial translation.
+	UnsupportedExpression FailureKind = iota + 1
 	// Source/schema contract failure for which forwarding the original is unsafe.
 	UnsafeSource
 	// Failure in private translation state after successful source admission.
@@ -22,14 +22,10 @@ const (
 type Stage uint8
 
 const (
-	// Whole-source checks before graph construction and field binding.
-	StageAdmission Stage = iota + 1
-	// Checked graph construction from admitted source.
-	StageImport
-	// Graph validation and fresh protobuf reconstruction from occurrence associations.
+	// Source coverage, operand checks, and graph construction.
+	StageImport Stage = iota + 1
+	// Fresh executable protobuf reconstruction from the actual graph.
 	StageExport
-	// Independent checks over the completed emitted protobuf.
-	StageCandidateValidation
 )
 
 // Immutable local classification retaining the original cause without graph/source payloads.

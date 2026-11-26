@@ -4,6 +4,9 @@ import (
 	"context"
 	"testing"
 
+	"github.com/lie-yan/predicate-optimization/expressions"
+	"github.com/lie-yan/predicate-optimization/types"
+	valueinterfaces "github.com/lie-yan/predicate-optimization/values/interfaces"
 	"github.com/stretchr/testify/require"
 
 	"github.com/milvus-io/milvus-proto/go-api/v3/schemapb"
@@ -15,6 +18,19 @@ import (
 	"github.com/milvus-io/milvus/pkg/v3/util/typeutil"
 )
 
+// Forces a genuine construction failure through the public runtime/factory interfaces.
+type failingBoolFactory struct{ valueinterfaces.ValueFactory }
+
+func (f failingBoolFactory) NewBool(*types.BoolType, bool) (valueinterfaces.Value, error) {
+	return nil, merr.ErrServiceInternal
+}
+
+type failingImportRuntime struct{ *adapterruntime.Runtime }
+
+func (r failingImportRuntime) ValueFactory() valueinterfaces.ValueFactory {
+	return failingBoolFactory{r.Runtime.ValueFactory()}
+}
+
 func TestTranslationFailureDisposition(t *testing.T) {
 	ctx := context.Background()
 	runtime, err := adapterruntime.SharedRuntime()
@@ -25,29 +41,37 @@ func TestTranslationFailureDisposition(t *testing.T) {
 	require.NoError(t, err)
 	translator, err := translation.New(runtime, view, runtime.Types())
 	require.NoError(t, err)
-	_, coverage := translator.Admit(ctx, &planpb.Expr{Expr: &planpb.Expr_CallExpr{CallExpr: &planpb.CallExpr{FunctionName: "unknown"}}})
-	_, unsafe := translator.Admit(ctx, &planpb.Expr{})
-	_, importDefect := translator.Import(ctx, nil)
+	_, coverage := translator.Import(ctx, &planpb.Expr{Expr: &planpb.Expr_CallExpr{CallExpr: &planpb.CallExpr{FunctionName: "unknown"}}})
+	_, unsafe := translator.Import(ctx, &planpb.Expr{})
+	_, missingSource := translator.Import(ctx, nil)
 	source := &planpb.Expr{Expr: &planpb.Expr_AlwaysTrueExpr{AlwaysTrueExpr: &planpb.AlwaysTrueExpr{}}}
-	admitted, err := translator.Admit(ctx, source)
+	broken, err := translation.New(failingImportRuntime{runtime}, view, runtime.Types())
 	require.NoError(t, err)
-	imported, err := translator.Import(ctx, admitted)
+	partial, importDefect := broken.Import(ctx, source)
+	require.Nil(t, partial)
+	imported, err := translator.Import(ctx, source)
 	require.NoError(t, err)
+	value, err := runtime.ValueFactory().NewInteger(runtime.Types().Int64NonNull, 7)
+	require.NoError(t, err)
+	literal, err := expressions.NewLiteralExpression(value)
+	require.NoError(t, err)
+	partialOutput, exportCoverage := translator.Export(ctx, imported, literal)
+	require.Nil(t, partialOutput)
 	_, graphDefect := translator.Export(ctx, imported, nil)
 	_, exportDefect := translator.Export(ctx, nil, imported.Root())
-	translationDefect := translator.ValidateCandidate(ctx, imported, &planpb.Expr{})
 	for _, tc := range []struct {
 		name    string
 		cause   error
 		stage   Stage
 		outcome Outcome
 	}{
-		{"coverage", coverage, StageAdmission, OutcomeUnsupported},
-		{"unsafe source", unsafe, StageAdmission, OutcomeUnknown},
-		{"import", importDefect, StageImport, OutcomeRetainedAfterFailure},
+		{"coverage", coverage, StageImport, OutcomeUnsupported},
+		{"export coverage", exportCoverage, StageExport, OutcomeUnsupported},
+		{"unsafe source", unsafe, StageImport, OutcomeUnknown},
+		{"missing source", missingSource, StageImport, OutcomeUnknown},
+		{"construction", importDefect, StageImport, OutcomeRetainedAfterFailure},
 		{"graph", graphDefect, StageExport, OutcomeRetainedAfterFailure},
 		{"export", exportDefect, StageExport, OutcomeRetainedAfterFailure},
-		{"candidate", translationDefect, StageCandidateValidation, OutcomeRetainedAfterFailure},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			require.Error(t, tc.cause)

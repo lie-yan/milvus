@@ -18,19 +18,12 @@ func TestMappingCancellation(t *testing.T) {
 	} {
 		t.Run(name, func(t *testing.T) {
 			source := binarySource(planpb.BinaryExpr_LogicalAnd, null, predicate)
-			admitted, imported := importSource(t, translator, source)
+			imported := importSource(t, translator, source)
 			candidate, err := translator.Export(context.Background(), imported, imported.Root())
 			require.NoError(t, err)
 			for name, stage := range map[string]func(context.Context) error{
-				"admit": func(ctx context.Context) error {
-					result, err := translator.Admit(ctx, source)
-					if err != nil {
-						require.Nil(t, result)
-					}
-					return err
-				},
 				"import": func(ctx context.Context) error {
-					result, err := translator.Import(ctx, admitted)
+					result, err := translator.Import(ctx, source)
 					if err != nil {
 						require.Nil(t, result)
 					}
@@ -43,7 +36,6 @@ func TestMappingCancellation(t *testing.T) {
 					}
 					return err
 				},
-				"candidate": func(ctx context.Context) error { return translator.ValidateCandidate(ctx, imported, candidate) },
 			} {
 				t.Run(name, func(t *testing.T) {
 					for checks := 1; checks < 32; checks++ {
@@ -57,7 +49,7 @@ func TestMappingCancellation(t *testing.T) {
 					t.Fatal("stage did not reach a complete result")
 				})
 			}
-			require.True(t, proto.Equal(source, candidate))
+			require.True(t, proto.Equal(expectedExport(source), candidate))
 
 		})
 	}

@@ -1,6 +1,7 @@
 package functions
 
 import (
+	"github.com/lie-yan/predicate-optimization/foundation"
 	shared "github.com/lie-yan/predicate-optimization/functions"
 
 	"github.com/milvus-io/milvus/pkg/v3/util/merr"
@@ -26,6 +27,12 @@ type FunctionDefinition struct {
 type FunctionCatalog struct {
 	// Private entries in first-registration order.
 	entries []*functionEntry
+	// Qualified-name overloads.
+	byName map[FunctionName]*overloadSet
+	// Built-in semantic-identity overloads.
+	byBuiltIn map[shared.BuiltInFunctionName]*overloadSet
+	// Operator overloads shared by comparison and arithmetic lookup.
+	byOperator map[foundation.OperatorType]*overloadSet
 }
 
 // Canonical semantic record shared within one snapshot.
@@ -81,7 +88,21 @@ func (b *FunctionCatalogBuilder) Build() (*FunctionCatalog, error) {
 	if err := b.checkOpen(); err != nil {
 		return nil, err
 	}
-	catalog := &FunctionCatalog{entries: b.state.entries}
+	catalog := &FunctionCatalog{entries: b.state.entries,
+		byName:     make(map[FunctionName]*overloadSet),
+		byBuiltIn:  make(map[shared.BuiltInFunctionName]*overloadSet),
+		byOperator: make(map[foundation.OperatorType]*overloadSet),
+	}
+	for i, entry := range catalog.entries {
+		args := entry.metadata.Signature().ArgumentTypes()
+		addOverload(catalog.byName, entry.name, i, args)
+		if name, present := entry.metadata.BuiltInName().Get(); present {
+			addOverload(catalog.byBuiltIn, name, i, args)
+		}
+		if op, present := entry.metadata.Operator().Get(); present {
+			addOverload(catalog.byOperator, op, i, args)
+		}
+	}
 	b.state.entries = nil
 	b.state.built = true
 	return catalog, nil

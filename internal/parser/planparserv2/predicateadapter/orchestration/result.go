@@ -31,14 +31,10 @@ const (
 	StageGate
 	// Runtime availability and translator setup.
 	StageSetup
-	// Whole-source routing and source checks.
-	StageAdmission
-	// Graph construction and attempt-local associations.
+	// Source coverage, graph construction and attempt-local associations.
 	StageImport
-	// Graph validation and fresh candidate reconstruction.
+	// Fresh candidate reconstruction.
 	StageExport
-	// Independent emitted-candidate checks.
-	StageCandidateValidation
 	// Trusted parser placement check.
 	StagePlacement
 	// Final cancellation check and candidate transfer.

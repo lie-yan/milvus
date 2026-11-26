@@ -17,7 +17,7 @@ func TestFailureProvenanceAndCause(t *testing.T) {
 		kind  FailureKind
 		stage Stage
 	}{
-		{UnsafeSource, StageAdmission}, {TranslationDefect, StageCandidateValidation},
+		{UnsafeSource, StageImport}, {TranslationDefect, StageExport},
 	} {
 		wrapped := merr.Wrap(newFailure(tc.kind, tc.stage, cause), "caller context")
 		var failure *Failure

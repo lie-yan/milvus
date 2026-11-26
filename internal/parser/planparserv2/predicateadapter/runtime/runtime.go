@@ -84,9 +84,43 @@ func assembleRuntime(definitions []functions.FunctionDefinition) (*Runtime, erro
 	if err != nil {
 		return nil, err
 	}
-	return &Runtime{
+	runtime := &Runtime{
 		factory: values.Factory, types: sharedPrimitiveTypes(), catalog: catalog, context: context,
-	}, nil
+	}
+	if err := runtime.validateComparisons(); err != nil {
+		return nil, err
+	}
+	return runtime, nil
+}
+
+// Checks the complete translation domain before the immutable runtime can escape.
+func (r *Runtime) validateComparisons() error {
+	p := r.types
+	for _, typ := range []types.Type{p.BoolNonNull, p.Int8NonNull, p.Int16NonNull, p.Int32NonNull, p.Int64NonNull, p.Float32NonNull, p.Float64NonNull} {
+		ops := []planpb.OpType{planpb.OpType_Equal, planpb.OpType_NotEqual}
+		if typ != p.BoolNonNull {
+			ops = append(ops, planpb.OpType_LessThan, planpb.OpType_LessEqual, planpb.OpType_GreaterThan, planpb.OpType_GreaterEqual)
+		}
+		for _, op := range ops {
+			handle, err := r.ComparisonFunction(op, typ, typ)
+			if err != nil {
+				return merr.Wrap(err, "predicateadapter: runtime comparison coverage")
+			}
+			metadata, err := r.context.Metadata(handle)
+			if err != nil {
+				return err
+			}
+			recovered, err := r.ComparisonOperator(handle)
+			if err != nil {
+				return err
+			}
+			signature := metadata.Signature()
+			if recovered != op || signature.ArgumentCount() != 2 || !typ.EqualsTo(signature.ArgumentTypeAt(0)) || !typ.EqualsTo(signature.ArgumentTypeAt(1)) || !p.BoolNonNull.EqualsTo(signature.ResultType()) {
+				return merr.WrapErrServiceInternalMsg("predicateadapter: inconsistent runtime comparison signature")
+			}
+		}
+	}
+	return nil
 }
 
 // Placeholder with unspecified invocation behavior; the empty pipeline must never execute it.

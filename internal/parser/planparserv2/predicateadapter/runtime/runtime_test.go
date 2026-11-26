@@ -79,8 +79,12 @@ func TestRuntimeSetupFailureDoesNotEscape(t *testing.T) {
 	runtime, err = assembleRuntime(ambiguous)
 	require.ErrorIs(t, err, shared.ErrUnsupportedLookup)
 	require.Nil(t, runtime)
-	// A failed attempt neither mutates declarations nor poisons later construction.
+	// The initial Bool/Int64 definitions alone cannot satisfy wider translation.
 	runtime, err = assembleRuntime(definitions)
+	require.ErrorIs(t, err, shared.ErrUnsupportedLookup)
+	require.Nil(t, runtime)
+	// A failed attempt does not poison later construction.
+	runtime, err = NewRuntime()
 	require.NoError(t, err)
 	require.NotNil(t, runtime)
 }

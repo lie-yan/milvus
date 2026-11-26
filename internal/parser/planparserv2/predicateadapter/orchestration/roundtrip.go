@@ -20,10 +20,8 @@ func RoundTrip(ctx context.Context, input AttemptInput, validateExpr func(*planp
 
 // Minimal private seam for isolated stage faults; production always uses the paired translator.
 type pairedTranslator interface {
-	Admit(context.Context, *planpb.Expr) (*translation.AdmissionPlan, error)
-	Import(context.Context, *translation.AdmissionPlan) (*translation.ImportResult, error)
+	Import(context.Context, *planpb.Expr) (*translation.ImportResult, error)
 	Export(context.Context, *translation.ImportResult, expressions.Expression) (*planpb.Expr, error)
-	ValidateCandidate(context.Context, *translation.ImportResult, *planpb.Expr) error
 }
 
 // Builds from the acquired runtime without schema refresh.
@@ -59,21 +57,14 @@ func roundTrip(ctx context.Context, input AttemptInput, validateExpr func(*planp
 	}
 	// The caller supplies an already validated original under immutable borrowing.
 	// Explicit unsafe-source failures still abort, irrespective of the retention guarantee.
-	admitted, err := translator.Admit(ctx, input.Original)
-	if err != nil {
-		return newFailureResult(ctx, StageAdmission, report, err, true)
-	}
-	imported, err := translator.Import(ctx, admitted)
+	imported, err := translator.Import(ctx, input.Original)
 	if err != nil {
 		return newFailureResult(ctx, StageImport, report, err, true)
 	}
-	// Export includes framework and adapter graph checks over the actual imported graph.
+	// Export trusts the imported graph and reconstructs a fresh candidate.
 	candidate, err := translator.Export(ctx, imported, imported.Root())
 	if err != nil {
 		return newFailureResult(ctx, StageExport, report, err, true)
-	}
-	if err := translator.ValidateCandidate(ctx, imported, candidate); err != nil {
-		return newFailureResult(ctx, StageCandidateValidation, report, err, true)
 	}
 	if err := ctx.Err(); err != nil {
 		return newAbortResult(StagePlacement, report, err)

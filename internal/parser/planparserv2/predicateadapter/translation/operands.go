@@ -9,7 +9,6 @@ import (
 	"github.com/lie-yan/predicate-optimization/foundation"
 	"github.com/lie-yan/predicate-optimization/types"
 	valueinterfaces "github.com/lie-yan/predicate-optimization/values/interfaces"
-	"google.golang.org/protobuf/proto"
 
 	"github.com/milvus-io/milvus-proto/go-api/v3/schemapb"
 	"github.com/milvus-io/milvus/internal/parser/planparserv2/predicateadapter/schema"
@@ -18,7 +17,7 @@ import (
 	"github.com/milvus-io/milvus/pkg/v3/util/typeutil"
 )
 
-// Admitted embedded field operand, independent of whole-Expr occurrence records.
+// Temporary validated field operand for graph construction.
 type fieldOperand struct {
 	// Borrowed metadata for this source position, immutable throughout the attempt.
 	source *planpb.ColumnInfo
@@ -35,10 +34,10 @@ type literalOperand struct {
 }
 
 // Separates native field coverage from the schema view's broader validation support.
-func (t *Translator) admitField(source *planpb.ColumnInfo) (fieldOperand, limitation, error) {
+func (t *Translator) readFieldOperand(source *planpb.ColumnInfo) (fieldOperand, limitation, error) {
 	field, supported, err := t.view.CheckColumn(source)
 	if err != nil {
-		return fieldOperand{}, noLimitation, newFailure(UnsafeSource, StageAdmission, err)
+		return fieldOperand{}, noLimitation, newFailure(UnsafeSource, StageImport, err)
 	}
 	if !supported {
 		return fieldOperand{}, excludedScopeOrVersion, nil
@@ -67,18 +66,18 @@ func (t *Translator) admitField(source *planpb.ColumnInfo) (fieldOperand, limita
 		params := typeutil.NewKvPairs(slices.Concat(field.GetIndexParams(), field.GetTypeParams()))
 		bound, err := params.Get("max_length")
 		if err != nil {
-			return fieldOperand{}, noLimitation, newFailure(UnsafeSource, StageAdmission, merr.WrapErrServiceInternalErr(err, "predicate translation: missing VARCHAR bound"))
+			return fieldOperand{}, noLimitation, newFailure(UnsafeSource, StageImport, merr.WrapErrServiceInternalErr(err, "predicate translation: missing VARCHAR bound"))
 		}
 		maxBytes, err := strconv.ParseUint(bound, 10, 64)
 		if err != nil {
-			return fieldOperand{}, noLimitation, newFailure(UnsafeSource, StageAdmission, merr.WrapErrServiceInternalErr(err, "predicate translation: invalid VARCHAR bound"))
+			return fieldOperand{}, noLimitation, newFailure(UnsafeSource, StageImport, merr.WrapErrServiceInternalErr(err, "predicate translation: invalid VARCHAR bound"))
 		}
 		if maxBytes == 0 {
 			return fieldOperand{}, noLimitation, sourceDefect("invalid zero VARCHAR schema bound")
 		}
 		typ, err = types.NewVarCharType(&maxBytes, foundation.NonNull)
 		if err != nil {
-			return fieldOperand{}, noLimitation, newFailure(UnsafeSource, StageAdmission, err)
+			return fieldOperand{}, noLimitation, newFailure(UnsafeSource, StageImport, err)
 		}
 	default:
 		return fieldOperand{}, excludedDomain, nil
@@ -87,7 +86,7 @@ func (t *Translator) admitField(source *planpb.ColumnInfo) (fieldOperand, limita
 }
 
 // Checks actual oneof arms before any default getter or Value construction.
-func (t *Translator) admitLiteral(source *planpb.GenericValue, typ types.Type) (literalOperand, limitation, error) {
+func (t *Translator) readLiteralOperand(source *planpb.GenericValue, typ types.Type) (literalOperand, limitation, error) {
 	if source == nil || source.Val == nil {
 		return literalOperand{}, noLimitation, sourceDefect("missing literal payload")
 	}
@@ -183,101 +182,15 @@ func (t *Translator) importLiteral(operand literalOperand) (*expressions.Literal
 	return graph, nil
 }
 
-// Checks registry ownership and the expected field role, not just membership in the registry.
-func checkField(registry *schema.FieldRegistry, operand fieldOperand, graph expressions.Expression, stage Stage) error {
+// Copies canonical metadata from the binding selected by the actual reference.
+func exportField(registry *schema.FieldRegistry, graph expressions.Expression) (*planpb.ColumnInfo, error) {
 	reference, ok := graph.(*expressions.ReferenceExpression)
-	if !ok || reference == nil {
-		return translationDefect(stage, "expected field reference")
+	if !ok || reference == nil || registry == nil {
+		return nil, translationDefect(StageExport, "expected field reference")
 	}
 	binding, err := registry.ResolveColumn(reference.ID(), reference.Type())
 	if err != nil {
-		return newFailure(TranslationDefect, stage, err)
+		return nil, newFailure(TranslationDefect, StageExport, err)
 	}
-	if !operand.typ.EqualsTo(reference.Type()) || binding.Field().GetFieldID() != operand.source.FieldId {
-		return translationDefect(stage, "reference changed field role or Type")
-	}
-	return nil
-}
-
-// Requires exact Type and payload correspondence through public scalar interfaces.
-func checkLiteral(operand literalOperand, graph expressions.Expression, stage Stage) error {
-	literal, ok := graph.(*expressions.LiteralExpression)
-	if !ok || literal == nil || !operand.typ.EqualsTo(literal.Type()) || literal.Value().IsNull() {
-		return translationDefect(stage, "literal changed shape, Type or null state")
-	}
-	switch source := operand.source.Val.(type) {
-	case *planpb.GenericValue_BoolVal:
-		value, ok := literal.Value().(valueinterfaces.BoolValue)
-		if !ok || value.Bool() != source.BoolVal {
-			return translationDefect(stage, "Bool literal changed payload")
-		}
-	case *planpb.GenericValue_Int64Val:
-		value, ok := literal.Value().(valueinterfaces.IntegerValue)
-		if !ok || value.Integer() != source.Int64Val {
-			return translationDefect(stage, "Int64 literal changed payload")
-		}
-	case *planpb.GenericValue_FloatVal:
-		value, ok := literal.Value().(valueinterfaces.FloatValue)
-		if !ok || math.Float64bits(value.Float()) != math.Float64bits(source.FloatVal) {
-			return translationDefect(stage, "floating literal changed payload")
-		}
-	case *planpb.GenericValue_StringVal:
-		value, ok := literal.Value().(valueinterfaces.VarCharValue)
-		if !ok || value.VarChar() != source.StringVal {
-			return translationDefect(stage, "string literal changed payload")
-		}
-	default:
-		return translationDefect(stage, "missing admitted scalar arm")
-	}
-	return nil
-}
-
-// Resolves the actual graph before copying this occurrence's metadata, never the first binding's metadata.
-func exportField(registry *schema.FieldRegistry, operand fieldOperand, graph expressions.Expression) (*planpb.ColumnInfo, error) {
-	if err := checkField(registry, operand, graph, StageExport); err != nil {
-		return nil, err
-	}
-	return proto.Clone(operand.source).(*planpb.ColumnInfo), nil
-}
-
-// Allocates a fresh exact protobuf arm from the checked actual graph payload.
-func exportLiteral(operand literalOperand, graph expressions.Expression) (*planpb.GenericValue, error) {
-	if err := checkLiteral(operand, graph, StageExport); err != nil {
-		return nil, err
-	}
-	value := graph.(*expressions.LiteralExpression).Value()
-	result := &planpb.GenericValue{}
-	switch operand.source.Val.(type) {
-	case *planpb.GenericValue_BoolVal:
-		result.Val = &planpb.GenericValue_BoolVal{BoolVal: value.(valueinterfaces.BoolValue).Bool()}
-	case *planpb.GenericValue_Int64Val:
-		result.Val = &planpb.GenericValue_Int64Val{Int64Val: value.(valueinterfaces.IntegerValue).Integer()}
-	case *planpb.GenericValue_FloatVal:
-		result.Val = &planpb.GenericValue_FloatVal{FloatVal: value.(valueinterfaces.FloatValue).Float()}
-	case *planpb.GenericValue_StringVal:
-		result.Val = &planpb.GenericValue_StringVal{StringVal: value.(valueinterfaces.VarCharValue).VarChar()}
-	}
-	return result, nil
-}
-
-// Independently checks emitted field metadata against its admitted source position.
-func checkFieldCandidate(operand fieldOperand, candidate *planpb.ColumnInfo) error {
-	if candidate == nil || len(candidate.ProtoReflect().GetUnknown()) != 0 || !proto.Equal(operand.source, candidate) {
-		return translationDefect(StageCandidateValidation, "field candidate changed metadata")
-	}
-	return nil
-}
-
-// Independently checks emitted scalar arms and payloads without invoking export or the factory.
-func checkLiteralCandidate(operand literalOperand, candidate *planpb.GenericValue) error {
-	if candidate == nil || len(candidate.ProtoReflect().GetUnknown()) != 0 || !proto.Equal(operand.source, candidate) {
-		return translationDefect(StageCandidateValidation, "literal candidate changed content")
-	}
-	if source, ok := operand.source.Val.(*planpb.GenericValue_FloatVal); ok {
-		value, ok := candidate.Val.(*planpb.GenericValue_FloatVal)
-		if !ok || value == nil || math.Float64bits(value.FloatVal) != math.Float64bits(source.FloatVal) {
-			return translationDefect(StageCandidateValidation, "floating candidate changed payload bits")
-		}
-	}
-	return nil
+	return binding.NewColumnInfo(), nil
 }

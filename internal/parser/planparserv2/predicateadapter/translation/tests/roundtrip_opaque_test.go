@@ -7,6 +7,7 @@ import (
 
 	"github.com/lie-yan/predicate-optimization/expressions"
 	expressioninterfaces "github.com/lie-yan/predicate-optimization/expressions/interfaces"
+	"github.com/lie-yan/predicate-optimization/foundation"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/protobuf/proto"
 
@@ -38,14 +39,13 @@ func TestOpaqueScalarNullRoundTrip(t *testing.T) {
 					source.GetNullExpr().Op = op
 					// Preserve envelope metadata as received at the completed parser boundary.
 					source.IsTemplate = true
-					_, imported := importSource(t, translator, source)
+					imported := importSource(t, translator, source)
 					leaf := imported.Root().(*expressions.OpaqueExpression)
 					require.Same(t, runtime.Types().BoolNonNull, leaf.Type())
 					rebuilt, err := expressions.NewOpaqueExpression(opaquePeer{[]string{leaf.ID().Key()}}, leaf.Type(), "different spelling")
 					require.NoError(t, err)
 					candidate, err := translator.Export(context.Background(), imported, rebuilt)
 					require.NoError(t, err)
-					require.NoError(t, translator.ValidateCandidate(context.Background(), imported, candidate))
 					require.True(t, proto.Equal(source, candidate))
 				})
 			}
@@ -53,7 +53,7 @@ func TestOpaqueScalarNullRoundTrip(t *testing.T) {
 	}
 }
 
-func TestOpaqueAdmissionFailures(t *testing.T) {
+func TestOpaqueImportCoverageFailures(t *testing.T) {
 	for _, tc := range []struct {
 		name   string
 		change func(*planpb.Expr) *planpb.Expr
@@ -65,24 +65,24 @@ func TestOpaqueAdmissionFailures(t *testing.T) {
 		{"missing message", func(e *planpb.Expr) *planpb.Expr { e.Expr = &planpb.Expr_NullExpr{}; return e }, translation.UnsafeSource},
 		{"missing column", func(e *planpb.Expr) *planpb.Expr { e.GetNullExpr().ColumnInfo = nil; return e }, translation.UnsafeSource},
 		{"zero operator", func(e *planpb.Expr) *planpb.Expr { e.GetNullExpr().Op = planpb.NullExpr_Invalid; return e }, translation.UnsafeSource},
-		{"future operator", func(e *planpb.Expr) *planpb.Expr { e.GetNullExpr().Op = 99; return e }, translation.UnsupportedSource},
+		{"future operator", func(e *planpb.Expr) *planpb.Expr { e.GetNullExpr().Op = 99; return e }, translation.UnsupportedExpression},
 		{"missing schema field", func(e *planpb.Expr) *planpb.Expr { e.GetNullExpr().ColumnInfo.FieldId = 999; return e }, translation.UnsafeSource},
 		{"changed nullability", func(e *planpb.Expr) *planpb.Expr { e.GetNullExpr().ColumnInfo.Nullable = false; return e }, translation.UnsafeSource},
 		{"changed datatype", func(e *planpb.Expr) *planpb.Expr {
 			e.GetNullExpr().ColumnInfo.DataType = schemapb.DataType_Int64
 			return e
 		}, translation.UnsafeSource},
-		{"nested scope", func(e *planpb.Expr) *planpb.Expr { e.GetNullExpr().ColumnInfo.NestedPath = []string{"x"}; return e }, translation.UnsupportedSource},
-		{"element scope", func(e *planpb.Expr) *planpb.Expr { e.GetNullExpr().ColumnInfo.IsElementLevel = true; return e }, translation.UnsupportedSource},
+		{"nested scope", func(e *planpb.Expr) *planpb.Expr { e.GetNullExpr().ColumnInfo.NestedPath = []string{"x"}; return e }, translation.UnsupportedExpression},
+		{"element scope", func(e *planpb.Expr) *planpb.Expr { e.GetNullExpr().ColumnInfo.IsElementLevel = true; return e }, translation.UnsupportedExpression},
 		{"unknown call type", func(*planpb.Expr) *planpb.Expr {
 			return &planpb.Expr{Expr: &planpb.Expr_CallExpr{CallExpr: &planpb.CallExpr{FunctionName: "unknown"}}}
-		}, translation.UnsupportedSource},
+		}, translation.UnsupportedExpression},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			translator, source, _ := opaqueFixture(t, schemapb.DataType_VarChar, true)
-			admitted, err := translator.Admit(context.Background(), tc.change(source))
-			require.Nil(t, admitted)
-			assertFailure(t, err, tc.kind, translation.StageAdmission)
+			imported, err := translator.Import(context.Background(), tc.change(source))
+			require.Nil(t, imported)
+			assertFailure(t, err, tc.kind, translation.StageImport)
 			if tc.kind == translation.UnsafeSource {
 				require.ErrorIs(t, err, merr.ErrServiceInternal)
 			}
@@ -99,21 +99,21 @@ func TestOpaqueAdmissionFailures(t *testing.T) {
 				message = source.GetNullExpr().ColumnInfo
 			}
 			message.ProtoReflect().SetUnknown([]byte{0xa0, 0x06, 1})
-			admitted, err := translator.Admit(context.Background(), source)
-			require.Nil(t, admitted)
-			assertFailure(t, err, translation.UnsupportedSource, translation.StageAdmission)
+			imported, err := translator.Import(context.Background(), source)
+			require.Nil(t, imported)
+			assertFailure(t, err, translation.UnsupportedExpression, translation.StageImport)
 		})
 	}
 	translator, source, _ := opaqueFixture(t, schemapb.DataType_JSON, true)
-	admitted, err := translator.Admit(context.Background(), source)
-	require.Nil(t, admitted)
-	assertFailure(t, err, translation.UnsupportedSource, translation.StageAdmission)
+	imported, err := translator.Import(context.Background(), source)
+	require.Nil(t, imported)
+	assertFailure(t, err, translation.UnsupportedExpression, translation.StageImport)
 }
 
-func TestOpaqueGraphOwnershipAndCandidateValidation(t *testing.T) {
+func TestOpaqueGraphOwnership(t *testing.T) {
 	translator, source, field := opaqueFixture(t, schemapb.DataType_VarChar, true)
-	admitted, imported := importSource(t, translator, source)
-	otherImport, err := translator.Import(context.Background(), admitted)
+	imported := importSource(t, translator, source)
+	otherImport, err := translator.Import(context.Background(), source)
 	require.NoError(t, err)
 	root := imported.Root().(*expressions.OpaqueExpression)
 	otherRoot := otherImport.Root().(*expressions.OpaqueExpression)
@@ -126,28 +126,12 @@ func TestOpaqueGraphOwnershipAndCandidateValidation(t *testing.T) {
 	require.NoError(t, err)
 	foreignID, err := expressions.NewOpaqueExpression(adapterexpressions.NewOpaqueID(1, 999), root.Type(), "")
 	require.NoError(t, err)
-	value, err := runtime.ValueFactory().NewBool(runtime.Types().BoolNonNull, true)
-	require.NoError(t, err)
-	literal, err := expressions.NewLiteralExpression(value)
-	require.NoError(t, err)
-	for _, graph := range []expressions.Expression{otherRoot, changedType, unregistered, foreignID, literal, (*expressions.OpaqueExpression)(nil)} {
+	for _, graph := range []expressions.Expression{otherRoot, changedType, unregistered, foreignID} {
 		output, err := translator.Export(context.Background(), imported, graph)
 		require.Nil(t, output)
 		assertFailure(t, err, translation.TranslationDefect, translation.StageExport)
 	}
-	for _, mutate := range []func(*planpb.Expr){
-		func(e *planpb.Expr) { e.IsTemplate = !e.IsTemplate },
-		func(e *planpb.Expr) { e.GetNullExpr().Op = planpb.NullExpr_IsNotNull },
-		func(e *planpb.Expr) { e.GetNullExpr().ColumnInfo.Nullable = false },
-		func(e *planpb.Expr) { e.GetNullExpr().ColumnInfo.IsPrimaryKey = true },
-		func(e *planpb.Expr) { e.GetNullExpr().ColumnInfo = nil },
-		func(e *planpb.Expr) { e.GetNullExpr().ColumnInfo.ProtoReflect().SetUnknown([]byte{0xa0, 0x06, 1}) },
-	} {
-		output, err := translator.Export(context.Background(), imported, root)
-		require.NoError(t, err)
-		mutate(output)
-		assertFailure(t, translator.ValidateCandidate(context.Background(), imported, output), translation.TranslationDefect, translation.StageCandidateValidation)
-	}
+
 	before := proto.Clone(source)
 	first, err := translator.Export(context.Background(), imported, root)
 	require.NoError(t, err)
@@ -168,32 +152,24 @@ func TestOpaqueGraphOwnershipAndCandidateValidation(t *testing.T) {
 
 func TestOpaqueStageIsolationAndCancellation(t *testing.T) {
 	translator, source, _ := opaqueFixture(t, schemapb.DataType_Int64, false)
-	admitted, imported := importSource(t, translator, source)
+	imported := importSource(t, translator, source)
 	candidate, err := translator.Export(context.Background(), imported, imported.Root())
 	require.NoError(t, err)
 	foreign, _, _ := opaqueFixture(t, schemapb.DataType_Int64, false)
-	result, err := foreign.Import(context.Background(), admitted)
-	require.Nil(t, result)
-	assertFailure(t, err, translation.TranslationDefect, translation.StageImport)
 	output, err := foreign.Export(context.Background(), imported, imported.Root())
 	require.Nil(t, output)
 	assertFailure(t, err, translation.TranslationDefect, translation.StageExport)
-	assertFailure(t, foreign.ValidateCandidate(context.Background(), imported, candidate), translation.TranslationDefect, translation.StageCandidateValidation)
 	for _, checks := range []int{1, 2} {
 		ctx := func() context.Context { return &cancellationContext{Context: context.Background(), remaining: checks} }
-		a, err := translator.Admit(ctx(), source)
-		require.Nil(t, a)
-		require.ErrorIs(t, err, context.Canceled)
-		i, err := translator.Import(ctx(), admitted)
+		i, err := translator.Import(ctx(), source)
 		require.Nil(t, i)
 		require.ErrorIs(t, err, context.Canceled)
 		out, err := translator.Export(ctx(), imported, imported.Root())
 		require.Nil(t, out)
 		require.ErrorIs(t, err, context.Canceled)
-		require.ErrorIs(t, translator.ValidateCandidate(ctx(), imported, candidate), context.Canceled)
 	}
-	// A single opaque export checks context at graph entry, graph handler, exporter, then final return.
-	for _, checks := range []int{3, 4} {
+	// A single opaque export checks context at entry, exporter, then final return.
+	for _, checks := range []int{3} {
 		out, err := translator.Export(&cancellationContext{Context: context.Background(), remaining: checks}, imported, imported.Root())
 		require.Nil(t, out)
 		require.ErrorIs(t, err, context.Canceled)
@@ -201,4 +177,30 @@ func TestOpaqueStageIsolationAndCancellation(t *testing.T) {
 		require.False(t, errors.As(err, &failure))
 	}
 	require.True(t, proto.Equal(source, candidate))
+}
+
+func TestOpaqueMovementAndDuplication(t *testing.T) {
+	translator, left, _ := opaqueFixture(t, schemapb.DataType_Int64, true)
+	right := proto.Clone(left).(*planpb.Expr)
+	right.GetNullExpr().Op = planpb.NullExpr_IsNotNull
+	source := binarySource(planpb.BinaryExpr_LogicalOr, left, right)
+	before := proto.Clone(source)
+	imported := importSource(t, translator, source)
+	graph := imported.Root()
+	swapped := logicalGraph(t, foundation.Or, graph.ChildAt(1), graph.ChildAt(0))
+	output, err := translator.Export(context.Background(), imported, swapped)
+	require.NoError(t, err)
+	require.True(t, proto.Equal(right, output.GetBinaryExpr().Left))
+	require.True(t, proto.Equal(left, output.GetBinaryExpr().Right))
+	duplicated := logicalGraph(t, foundation.Or, graph.ChildAt(1), graph.ChildAt(1))
+	first, err := translator.Export(context.Background(), imported, duplicated)
+	require.NoError(t, err)
+	second, err := translator.Export(context.Background(), imported, duplicated)
+	require.NoError(t, err)
+	require.True(t, proto.Equal(right, first.GetBinaryExpr().Left))
+	first.GetBinaryExpr().Left.GetNullExpr().ColumnInfo.FieldId = 999
+	require.True(t, proto.Equal(right, first.GetBinaryExpr().Right))
+	require.True(t, proto.Equal(right, second.GetBinaryExpr().Left))
+	require.True(t, proto.Equal(right, second.GetBinaryExpr().Right))
+	require.True(t, proto.Equal(before, source))
 }

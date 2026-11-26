@@ -60,7 +60,7 @@ func TestRoundTripAcceptanceAndOwnership(t *testing.T) {
 	require.True(t, proto.Equal(schemaBefore, fields))
 }
 
-func TestRoundTripAdmissionOutcomes(t *testing.T) {
+func TestRoundTripImportCoverageOutcomes(t *testing.T) {
 	input, _ := roundTripInput(t)
 	for _, tc := range []struct {
 		name    string
@@ -77,7 +77,7 @@ func TestRoundTripAdmissionOutcomes(t *testing.T) {
 			before := proto.Clone(in.Original)
 			result, err := orchestration.RoundTrip(context.Background(), in, func(*planpb.Expr) error { t.Fatal("admission failure reached placement"); return nil })
 			require.Equal(t, tc.outcome, result.Outcome())
-			require.Equal(t, orchestration.StageAdmission, result.Report().Stage)
+			require.Equal(t, orchestration.StageImport, result.Report().Stage)
 			require.Nil(t, result.Candidate())
 			require.True(t, proto.Equal(before, in.Original))
 			if tc.outcome == orchestration.OutcomeUnsupported {

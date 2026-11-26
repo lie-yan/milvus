@@ -11,12 +11,12 @@ import (
 
 func TestRetainedResultPreservesDiagnostics(t *testing.T) {
 	cause := merr.WrapErrServiceInternalMsg("private candidate defect")
-	result, err := newRetainedResult(OutcomeRetainedAfterFailure, StageCandidateValidation, Report{}, cause)
+	result, err := newRetainedResult(OutcomeRetainedAfterFailure, StageExport, Report{}, cause)
 	require.NoError(t, err)
 	require.Nil(t, result.Candidate())
 	report := result.Report()
 	require.Equal(t, Report{
-		Outcome: OutcomeRetainedAfterFailure, Stage: StageCandidateValidation,
+		Outcome: OutcomeRetainedAfterFailure, Stage: StageExport,
 		Cause: cause,
 	}, report)
 	// Caller edits to diagnostic values cannot change the operation's disposition.

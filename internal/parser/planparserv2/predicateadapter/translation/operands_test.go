@@ -1,6 +1,7 @@
 package translation
 
 import (
+	"context"
 	"errors"
 	"math"
 	"testing"
@@ -63,63 +64,62 @@ func TestFieldOperandRoundTripAndRole(t *testing.T) {
 	var operands []fieldOperand
 	var graphs []*expressions.ReferenceExpression
 	for _, column := range columns[:3] {
-		operand, reason, err := translator.admitField(column)
+		operand, reason, err := translator.readFieldOperand(column)
 		require.NoError(t, err)
 		require.Equal(t, noLimitation, reason)
 		graph, err := importField(registry, operand)
 		require.NoError(t, err)
 		rebuilt, err := expressions.NewReferenceExpression(graph.ID(), graph.Type(), "different diagnostic name")
 		require.NoError(t, err)
-		require.NoError(t, checkField(registry, operand, rebuilt, StageExport))
-		output, err := exportField(registry, operand, rebuilt)
+		output, err := exportField(registry, rebuilt)
 		require.NoError(t, err)
-		require.NoError(t, checkFieldCandidate(operand, output))
 		require.True(t, proto.Equal(column, output))
 		require.NotSame(t, column, output)
-		output.IsPrimaryKey = !output.IsPrimaryKey
-		requireOperandFailure(t, checkFieldCandidate(operand, output), TranslationDefect, StageCandidateValidation)
 		operands = append(operands, operand)
 		graphs = append(graphs, graph)
 	}
-	// A second source position reuses field identity but owns its reconstruction association.
+	// Repeated references share identity but receive independent exported metadata.
 	repeated := proto.Clone(columns[0]).(*planpb.ColumnInfo)
-	operand, reason, err := translator.admitField(repeated)
+	operand, reason, err := translator.readFieldOperand(repeated)
 	require.NoError(t, err)
 	require.Equal(t, noLimitation, reason)
 	graph, err := importField(registry, operand)
 	require.NoError(t, err)
 	require.True(t, graphs[0].ID().EqualsTo(graph.ID()))
 	require.Same(t, repeated, operand.source)
-	first, err := exportField(registry, operands[0], graphs[0])
+	first, err := exportField(registry, graphs[0])
 	require.NoError(t, err)
-	second, err := exportField(registry, operand, graph)
+	second, err := exportField(registry, graph)
 	require.NoError(t, err)
 	first.NestedPath = []string{"changed"}
 	require.Empty(t, second.NestedPath)
 	require.Empty(t, repeated.NestedPath)
 	require.Empty(t, columns[0].NestedPath)
+	// Export follows a registered graph reference rather than a source position.
+	replacement, err := exportField(registry, graphs[1])
+	require.NoError(t, err)
+	require.True(t, proto.Equal(columns[1], replacement))
 	foreign, err := schema.NewFieldRegistry(translator.view)
 	require.NoError(t, err)
 	foreignGraph, err := importField(foreign, operands[0])
 	require.NoError(t, err)
 	changedType, err := expressions.NewReferenceExpression(graph.ID(), translator.primitives.Int64MayNull, "")
 	require.NoError(t, err)
-	requireOperandFailure(t, checkField(registry, operands[0], foreignGraph, StageExport), TranslationDefect, StageExport)
-	for _, changed := range []expressions.Expression{graphs[1], graphs[2], foreignGraph, changedType} {
-		output, err := exportField(registry, operands[0], changed)
+	for _, changed := range []expressions.Expression{foreignGraph, changedType} {
+		output, err := exportField(registry, changed)
 		require.Nil(t, output)
 		requireOperandFailure(t, err, TranslationDefect, StageExport)
 	}
 }
 
-func TestOperandAdmissionCoverageAndDefects(t *testing.T) {
+func TestOperandImportCoverageCoverageAndDefects(t *testing.T) {
 	translator, _, columns := operandFixture(t)
 	nested := proto.Clone(columns[0]).(*planpb.ColumnInfo)
 	nested.NestedPath = []string{"x"}
 	unknownColumn := proto.Clone(columns[0]).(*planpb.ColumnInfo)
 	unknownColumn.ProtoReflect().SetUnknown([]byte{0xa0, 0x06, 1})
 	for _, column := range []*planpb.ColumnInfo{columns[3], nested, unknownColumn} {
-		operand, reason, err := translator.admitField(column)
+		operand, reason, err := translator.readFieldOperand(column)
 		require.NoError(t, err)
 		require.NotEqual(t, noLimitation, reason)
 		require.Nil(t, operand.source)
@@ -127,8 +127,8 @@ func TestOperandAdmissionCoverageAndDefects(t *testing.T) {
 	mismatch := proto.Clone(columns[0]).(*planpb.ColumnInfo)
 	mismatch.DataType = schemapb.DataType_Bool
 	for _, column := range []*planpb.ColumnInfo{nil, mismatch} {
-		_, _, err := translator.admitField(column)
-		requireOperandFailure(t, err, UnsafeSource, StageAdmission)
+		_, _, err := translator.readFieldOperand(column)
+		requireOperandFailure(t, err, UnsafeSource, StageImport)
 	}
 	for _, tc := range []struct {
 		value *planpb.GenericValue
@@ -140,17 +140,17 @@ func TestOperandAdmissionCoverageAndDefects(t *testing.T) {
 		{&planpb.GenericValue{Val: &planpb.GenericValue_BoolVal{BoolVal: false}}, translator.primitives.Int64NonNull},
 		{&planpb.GenericValue{Val: &planpb.GenericValue_Int64Val{Int64Val: 0}}, translator.primitives.BoolNonNull},
 	} {
-		_, _, err := translator.admitLiteral(tc.value, tc.typ)
-		requireOperandFailure(t, err, UnsafeSource, StageAdmission)
+		_, _, err := translator.readLiteralOperand(tc.value, tc.typ)
+		requireOperandFailure(t, err, UnsafeSource, StageImport)
 	}
 	unknown := &planpb.GenericValue{Val: &planpb.GenericValue_Int64Val{Int64Val: 1}}
 	unknown.ProtoReflect().SetUnknown([]byte{0xa0, 0x06, 1})
-	_, reason, err := translator.admitLiteral(unknown, translator.primitives.Int64NonNull)
+	_, reason, err := translator.readLiteralOperand(unknown, translator.primitives.Int64NonNull)
 	require.NoError(t, err)
 	require.Equal(t, excludedScopeOrVersion, reason)
 	plain := &planpb.GenericValue{Val: &planpb.GenericValue_Int64Val{Int64Val: 1}}
 	for _, typ := range []types.Type{translator.primitives.Int64MayNull} {
-		_, reason, err := translator.admitLiteral(plain, typ)
+		_, reason, err := translator.readLiteralOperand(plain, typ)
 		require.NoError(t, err)
 		require.Equal(t, excludedDomain, reason)
 	}
@@ -187,12 +187,11 @@ func TestLiteralOperandExactRoundTrip(t *testing.T) {
 		}{&planpb.GenericValue{Val: &planpb.GenericValue_Int64Val{Int64Val: n}}, translator.primitives.Int64NonNull})
 	}
 	for i, tc := range cases {
-		operand, reason, err := translator.admitLiteral(tc.source, tc.typ)
+		operand, reason, err := translator.readLiteralOperand(tc.source, tc.typ)
 		require.NoError(t, err)
 		require.Equal(t, noLimitation, reason)
 		graph, err := translator.importLiteral(operand)
 		require.NoError(t, err)
-		require.NoError(t, checkLiteral(operand, graph, StageExport))
 		var peer valueinterfaces.Value
 		switch payload := tc.source.Val.(type) {
 		case *planpb.GenericValue_BoolVal:
@@ -202,11 +201,10 @@ func TestLiteralOperandExactRoundTrip(t *testing.T) {
 		}
 		rebuilt, err := expressions.NewLiteralExpression(peer)
 		require.NoError(t, err)
-		output, err := exportLiteral(operand, rebuilt)
+		output, err := exportScalar(rebuilt)
 		require.NoError(t, err)
-		require.NoError(t, checkLiteralCandidate(operand, output))
 		require.True(t, proto.Equal(tc.source, output))
-		second, err := exportLiteral(operand, graph)
+		second, err := exportScalar(graph)
 		require.NoError(t, err)
 		if i == 0 || i == 2 { // One ownership check per Bool/Int64 arm.
 			require.NotSame(t, output, second)
@@ -219,35 +217,21 @@ func TestLiteralOperandExactRoundTrip(t *testing.T) {
 			payload.Int64Val ^= 1
 		}
 		require.True(t, proto.Equal(tc.source, second))
-		requireOperandFailure(t, checkLiteralCandidate(operand, output), TranslationDefect, StageCandidateValidation)
 	}
 }
 
-func TestLiteralOperandRejectsChangedGraphAndCandidate(t *testing.T) {
+func TestScalarExportRejectsNullableValues(t *testing.T) {
 	translator, _, _ := operandFixture(t)
-	source := &planpb.GenericValue{Val: &planpb.GenericValue_Int64Val{Int64Val: 9007199254740993}}
-	operand, _, err := translator.admitLiteral(source, translator.primitives.Int64NonNull)
-	require.NoError(t, err)
-	changed, err := translator.factory.NewInteger(translator.primitives.Int64NonNull, 9007199254740992)
-	require.NoError(t, err)
-	narrow, err := translator.factory.NewInteger(translator.primitives.Int32NonNull, 1)
-	require.NoError(t, err)
-	nullable, err := translator.factory.NewInteger(translator.primitives.Int64MayNull, 9007199254740993)
+	nullable, err := translator.factory.NewInteger(translator.primitives.Int64MayNull, 7)
 	require.NoError(t, err)
 	null, err := translator.factory.NewNull(translator.primitives.Int64MayNull)
 	require.NoError(t, err)
-	for _, value := range []valueinterfaces.Value{changed, narrow, nullable, null} {
-		changedGraph, err := expressions.NewLiteralExpression(value)
+	for _, value := range []valueinterfaces.Value{nullable, null} {
+		graph, err := expressions.NewLiteralExpression(value)
 		require.NoError(t, err)
-		requireOperandFailure(t, checkLiteral(operand, changedGraph, StageExport), TranslationDefect, StageExport)
-		output, err := exportLiteral(operand, changedGraph)
+		output, err := exportScalar(graph)
 		require.Nil(t, output)
-		requireOperandFailure(t, err, TranslationDefect, StageExport)
-	}
-	unknown := proto.Clone(source).(*planpb.GenericValue)
-	unknown.ProtoReflect().SetUnknown([]byte{0xa0, 0x06, 1})
-	for _, candidate := range []*planpb.GenericValue{nil, {}, {Val: &planpb.GenericValue_BoolVal{}}, unknown} {
-		requireOperandFailure(t, checkLiteralCandidate(operand, candidate), TranslationDefect, StageCandidateValidation)
+		requireOperandFailure(t, err, UnsupportedExpression, StageExport)
 	}
 }
 
@@ -262,16 +246,30 @@ func (f failingOperandFactory) NewInteger(*types.IntType, int64) (valueinterface
 }
 
 func TestOperandConstructionFailure(t *testing.T) {
-	translator, _, _ := operandFixture(t)
-	source := &planpb.GenericValue{Val: &planpb.GenericValue_Int64Val{Int64Val: 1}}
-	operand, _, err := translator.admitLiteral(source, translator.primitives.Int64NonNull)
-	require.NoError(t, err)
+	translator, _, columns := operandFixture(t)
+	source := &planpb.Expr{Expr: &planpb.Expr_BinaryExpr{BinaryExpr: &planpb.BinaryExpr{
+		Op:   planpb.BinaryExpr_LogicalAnd,
+		Left: &planpb.Expr{Expr: &planpb.Expr_AlwaysTrueExpr{AlwaysTrueExpr: &planpb.AlwaysTrueExpr{}}},
+		Right: &planpb.Expr{Expr: &planpb.Expr_UnaryRangeExpr{UnaryRangeExpr: &planpb.UnaryRangeExpr{
+			ColumnInfo: columns[0], Op: planpb.OpType_Equal,
+			Value: &planpb.GenericValue{Val: &planpb.GenericValue_Int64Val{Int64Val: 1}},
+		}}},
+	}}}
+	before := proto.Clone(source)
+	factory := translator.factory
 	cause := errors.New("injected factory failure")
-	translator.factory = failingOperandFactory{ValueFactory: translator.factory, cause: cause}
-	graph, err := translator.importLiteral(operand)
-	require.Nil(t, graph)
+	translator.factory = failingOperandFactory{ValueFactory: factory, cause: cause}
+	imported, err := translator.Import(context.Background(), source)
+	require.Nil(t, imported)
 	require.ErrorIs(t, err, cause)
 	requireOperandFailure(t, err, TranslationDefect, StageImport)
+	require.True(t, proto.Equal(before, source))
+	translator.factory = factory
+	imported, err = translator.Import(context.Background(), source)
+	require.NoError(t, err)
+	output, err := translator.Export(context.Background(), imported, imported.Root())
+	require.NoError(t, err)
+	require.True(t, proto.Equal(before, output))
 }
 
 func TestExtendedScalarOperandCodecs(t *testing.T) {
@@ -282,28 +280,26 @@ func TestExtendedScalarOperandCodecs(t *testing.T) {
 	require.NoError(t, err)
 	expected = append(expected, varchar)
 	for i, column := range columns[4:] {
-		operand, reason, err := translator.admitField(column)
+		operand, reason, err := translator.readFieldOperand(column)
 		require.NoError(t, err)
 		require.Equal(t, noLimitation, reason)
 		require.True(t, expected[i].EqualsTo(operand.typ))
 		graph, err := importField(registry, operand)
 		require.NoError(t, err)
-		output, err := exportField(registry, operand, graph)
+		output, err := exportField(registry, graph)
 		require.NoError(t, err)
 		require.True(t, proto.Equal(column, output))
-		require.NoError(t, checkFieldCandidate(operand, output))
 	}
 	roundTrip := func(source *planpb.GenericValue, typ types.Type) {
 		t.Helper()
-		operand, reason, err := translator.admitLiteral(source, typ)
+		operand, reason, err := translator.readLiteralOperand(source, typ)
 		require.NoError(t, err)
 		require.Equal(t, noLimitation, reason)
 		graph, err := translator.importLiteral(operand)
 		require.NoError(t, err)
 		require.True(t, typ.EqualsTo(graph.Type()))
-		output, err := exportLiteral(operand, graph)
+		output, err := exportScalar(graph)
 		require.NoError(t, err)
-		require.NoError(t, checkLiteralCandidate(operand, output))
 		require.True(t, proto.Equal(source, output))
 		if v, ok := source.Val.(*planpb.GenericValue_FloatVal); ok {
 			require.Equal(t, math.Float64bits(v.FloatVal), math.Float64bits(output.GetFloatVal()))
@@ -315,7 +311,7 @@ func TestExtendedScalarOperandCodecs(t *testing.T) {
 			roundTrip(&planpb.GenericValue{Val: &planpb.GenericValue_Int64Val{Int64Val: value}}, typ)
 		}
 		for _, value := range []int64{-limit - 1, limit} {
-			_, reason, err := translator.admitLiteral(&planpb.GenericValue{Val: &planpb.GenericValue_Int64Val{Int64Val: value}}, typ)
+			_, reason, err := translator.readLiteralOperand(&planpb.GenericValue{Val: &planpb.GenericValue_Int64Val{Int64Val: value}}, typ)
 			require.NoError(t, err)
 			require.Equal(t, excludedDomain, reason)
 		}
@@ -342,7 +338,7 @@ func TestExtendedScalarOperandCodecs(t *testing.T) {
 		{&planpb.GenericValue{Val: &planpb.GenericValue_FloatVal{FloatVal: math.NaN()}}, translator.primitives.Float64NonNull},
 		{&planpb.GenericValue{Val: &planpb.GenericValue_StringVal{StringVal: "ééééé"}}, varchar},
 	} {
-		_, reason, err := translator.admitLiteral(tc.value, tc.typ)
+		_, reason, err := translator.readLiteralOperand(tc.value, tc.typ)
 		require.NoError(t, err)
 		require.Equal(t, excludedDomain, reason)
 	}
@@ -357,54 +353,53 @@ func TestExtendedScalarOperandCodecs(t *testing.T) {
 		} else {
 			field.TypeParams = []*commonpb.KeyValuePair{{Key: "max_length", Value: bound}}
 		}
-		_, _, err = fresh.admitField(cols[9])
-		requireOperandFailure(t, err, UnsafeSource, StageAdmission)
+		_, _, err = fresh.readFieldOperand(cols[9])
+		requireOperandFailure(t, err, UnsafeSource, StageImport)
 	}
-
 }
 
 func TestExtendedLiteralCorrespondence(t *testing.T) {
 	translator, _, _ := operandFixture(t)
 	negativeZero := &planpb.GenericValue{Val: &planpb.GenericValue_FloatVal{FloatVal: math.Copysign(0, -1)}}
-	operand, _, err := translator.admitLiteral(negativeZero, translator.primitives.Float64NonNull)
+	operand, _, err := translator.readLiteralOperand(negativeZero, translator.primitives.Float64NonNull)
 	require.NoError(t, err)
 	graph, err := translator.importLiteral(operand)
 	require.NoError(t, err)
-	originalOutput, err := exportLiteral(operand, graph)
+	originalOutput, err := exportScalar(graph)
 	require.NoError(t, err)
 	require.NotSame(t, negativeZero.Val, originalOutput.Val)
+	require.Equal(t, math.Float64bits(negativeZero.GetFloatVal()), math.Float64bits(originalOutput.GetFloatVal()))
 	positiveZero, err := translator.factory.NewFloat(translator.primitives.Float64NonNull, 0)
 	require.NoError(t, err)
 	changed, err := expressions.NewLiteralExpression(positiveZero)
 	require.NoError(t, err)
-	output, err := exportLiteral(operand, changed)
-	require.Nil(t, output)
-	requireOperandFailure(t, err, TranslationDefect, StageExport)
-	requireOperandFailure(t, checkLiteralCandidate(operand, &planpb.GenericValue{Val: &planpb.GenericValue_FloatVal{FloatVal: 0}}), TranslationDefect, StageCandidateValidation)
+	output, err := exportScalar(changed)
+	require.NoError(t, err)
+	require.False(t, math.Signbit(output.GetFloatVal()))
 	varchar, err := types.NewVarCharType(nil, translator.primitives.BoolNonNull.Nullability())
 	require.NoError(t, err)
 	text := &planpb.GenericValue{Val: &planpb.GenericValue_StringVal{StringVal: "text"}}
-	stringOperand, _, err := translator.admitLiteral(text, varchar)
+	stringOperand, _, err := translator.readLiteralOperand(text, varchar)
 	require.NoError(t, err)
 	graph, err = translator.importLiteral(stringOperand)
 	require.NoError(t, err)
-	originalOutput, err = exportLiteral(stringOperand, graph)
+	originalOutput, err = exportScalar(graph)
 	require.NoError(t, err)
 	require.NotSame(t, text.Val, originalOutput.Val)
 	wrong, err := translator.factory.NewVarChar(varchar, "other")
 	require.NoError(t, err)
 	changed, err = expressions.NewLiteralExpression(wrong)
 	require.NoError(t, err)
-	output, err = exportLiteral(stringOperand, changed)
-	require.Nil(t, output)
-	requireOperandFailure(t, err, TranslationDefect, StageExport)
+	output, err = exportScalar(changed)
+	require.NoError(t, err)
+	require.Equal(t, "other", output.GetStringVal())
 	for _, tc := range []struct {
 		value *planpb.GenericValue
 		typ   types.Type
 	}{
 		{text, translator.primitives.Float64NonNull}, {negativeZero, varchar},
 	} {
-		_, _, err := translator.admitLiteral(tc.value, tc.typ)
-		requireOperandFailure(t, err, UnsafeSource, StageAdmission)
+		_, _, err := translator.readLiteralOperand(tc.value, tc.typ)
+		requireOperandFailure(t, err, UnsafeSource, StageImport)
 	}
 }

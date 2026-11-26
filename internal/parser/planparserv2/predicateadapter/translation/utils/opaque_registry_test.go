@@ -10,6 +10,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	adapterexpressions "github.com/milvus-io/milvus/internal/parser/planparserv2/predicateadapter/expressions"
+	"github.com/milvus-io/milvus/pkg/v3/proto/planpb"
 	"github.com/milvus-io/milvus/pkg/v3/util/merr"
 )
 
@@ -33,9 +34,9 @@ func TestOpaqueResolutionRejectsForeignOrChangedIdentity(t *testing.T) {
 	require.NoError(t, err)
 	integer, err := types.NewIntType(types.Int64, foundation.NonNull)
 	require.NoError(t, err)
-	binding, err := registry.Register(7, boolean)
+	binding, err := registry.Register(&planpb.Expr{}, boolean)
 	require.NoError(t, err)
-	other, err := foreign.Register(7, boolean)
+	other, err := foreign.Register(&planpb.Expr{}, boolean)
 	require.NoError(t, err)
 	for _, id := range []expressioninterfaces.OpaqueID{
 		other.id,
@@ -43,14 +44,14 @@ func TestOpaqueResolutionRejectsForeignOrChangedIdentity(t *testing.T) {
 		preservedID{[]string{registry.prefix + "00"}},
 		preservedID{[]string{registry.prefix + "invalid"}},
 	} {
-		_, err := registry.Resolve(id, boolean, 7)
+		_, err := registry.Resolve(id, boolean)
 		require.ErrorIs(t, err, merr.ErrServiceInternal)
 	}
-	_, err = registry.Resolve(preservedID{[]string{registry.prefix + "invalid"}}, boolean, 7)
+	_, err = registry.Resolve(preservedID{[]string{registry.prefix + "invalid"}}, boolean)
 	var parseError *strconv.NumError
 	require.ErrorAs(t, err, &parseError)
 	for _, changed := range []types.Type{nullable, integer} {
-		_, err := registry.Resolve(binding.id, changed, 7)
+		_, err := registry.Resolve(binding.id, changed)
 		require.ErrorIs(t, err, merr.ErrServiceInternal)
 	}
 	require.Len(t, registry.bindings, 1) // Failed resolution never registers a region.

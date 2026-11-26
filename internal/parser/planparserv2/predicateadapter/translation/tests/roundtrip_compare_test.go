@@ -60,7 +60,7 @@ func TestFieldComparisonMappings(t *testing.T) {
 					if same {
 						input.GetCompareExpr().RightColumnInfo = proto.Clone(input.GetCompareExpr().LeftColumnInfo).(*planpb.ColumnInfo)
 					}
-					_, imported := importSource(t, translator, input)
+					imported := importSource(t, translator, input)
 					call := imported.Root().(*expressions.CallExpression)
 					left := call.ChildAt(0).(*expressions.ReferenceExpression)
 					right := call.ChildAt(1).(*expressions.ReferenceExpression)
@@ -69,15 +69,14 @@ func TestFieldComparisonMappings(t *testing.T) {
 					rebuilt := rebuiltCall(t, call, left, right)
 					output, err := translator.Export(ctx, imported, rebuilt)
 					require.NoError(t, err)
-					require.NoError(t, translator.ValidateCandidate(ctx, imported, output))
-					require.True(t, proto.Equal(input, output))
+					require.True(t, proto.Equal(expectedExport(input), output))
 				}
 			}
 		})
 	}
 }
 
-func TestFieldComparisonAdmission(t *testing.T) {
+func TestFieldComparisonImportCoverage(t *testing.T) {
 	for _, tc := range []struct {
 		left, right schemapb.DataType
 		nullable    bool
@@ -90,9 +89,9 @@ func TestFieldComparisonAdmission(t *testing.T) {
 		{schemapb.DataType_Int64, schemapb.DataType_Int64, true},
 	} {
 		translator, source := compareFixture(t, tc.left, tc.right, tc.nullable)
-		admitted, err := translator.Admit(context.Background(), source)
-		require.Nil(t, admitted)
-		assertFailure(t, err, translation.UnsupportedSource, translation.StageAdmission)
+		imported, err := translator.Import(context.Background(), source)
+		require.Nil(t, imported)
+		assertFailure(t, err, translation.UnsupportedExpression, translation.StageImport)
 	}
 	for _, tc := range []struct {
 		name   string
@@ -106,32 +105,30 @@ func TestFieldComparisonAdmission(t *testing.T) {
 			n.RightColumnInfo.FieldId = 999
 		}, translation.UnsafeSource},
 		{"invalid operator", func(n *planpb.CompareExpr) { n.Op = planpb.OpType_Invalid }, translation.UnsafeSource},
-		{"future operator", func(n *planpb.CompareExpr) { n.Op = 999 }, translation.UnsupportedSource},
-		{"unknown message", func(n *planpb.CompareExpr) { n.ProtoReflect().SetUnknown([]byte{0xa0, 0x06, 1}) }, translation.UnsupportedSource},
+		{"future operator", func(n *planpb.CompareExpr) { n.Op = 999 }, translation.UnsupportedExpression},
+		{"unknown message", func(n *planpb.CompareExpr) { n.ProtoReflect().SetUnknown([]byte{0xa0, 0x06, 1}) }, translation.UnsupportedExpression},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			translator, source := compareFixture(t, schemapb.DataType_Int64, schemapb.DataType_Int64, false)
 			tc.change(source.GetCompareExpr())
-			admitted, err := translator.Admit(context.Background(), binarySource(planpb.BinaryExpr_LogicalAnd, trueSource(), source))
-			require.Nil(t, admitted)
-			assertFailure(t, err, tc.kind, translation.StageAdmission)
+			imported, err := translator.Import(context.Background(), binarySource(planpb.BinaryExpr_LogicalAnd, trueSource(), source))
+			require.Nil(t, imported)
+			assertFailure(t, err, tc.kind, translation.StageImport)
 		})
 	}
 	translator, source := compareFixture(t, schemapb.DataType_Bool, schemapb.DataType_Bool, false)
 	source.GetCompareExpr().Op = planpb.OpType_LessThan
-	_, err := translator.Admit(context.Background(), source)
-	assertFailure(t, err, translation.UnsupportedSource, translation.StageAdmission)
+	_, err := translator.Import(context.Background(), source)
+	assertFailure(t, err, translation.UnsupportedExpression, translation.StageImport)
 }
 
 func TestFieldComparisonCompositionAndDefects(t *testing.T) {
 	ctx := context.Background()
 	translator, source := compareFixture(t, schemapb.DataType_Int64, schemapb.DataType_Int64, false)
-	_, imported := importSource(t, translator, source)
+	imported := importSource(t, translator, source)
 	call := imported.Root().(*expressions.CallExpression)
-	_, foreign := importSource(t, translator, source)
+	foreign := importSource(t, translator, source)
 	for _, args := range [][]expressions.Expression{
-		{call.ChildAt(1), call.ChildAt(0)},
-		{call.ChildAt(0), call.ChildAt(0)},
 		{call.ChildAt(0), foreign.Root().ChildAt(1)},
 	} {
 		graph := rebuiltCall(t, call, args...)
@@ -139,34 +136,32 @@ func TestFieldComparisonCompositionAndDefects(t *testing.T) {
 		require.Nil(t, output)
 		assertFailure(t, err, translation.TranslationDefect, translation.StageExport)
 	}
+	// Registered operands may move or repeat; exported metadata follows their IDs.
+	for _, args := range [][]expressions.Expression{
+		{call.ChildAt(1), call.ChildAt(0)}, {call.ChildAt(0), call.ChildAt(0)},
+	} {
+		output, err := translator.Export(ctx, imported, rebuiltCall(t, call, args...))
+		require.NoError(t, err)
+		require.Equal(t, source.GetCompareExpr().LeftColumnInfo.FieldId, output.GetCompareExpr().RightColumnInfo.FieldId)
+		expectedLeft := source.GetCompareExpr().LeftColumnInfo.FieldId
+		if args[0] == call.ChildAt(1) {
+			expectedLeft = source.GetCompareExpr().RightColumnInfo.FieldId
+		}
+		require.Equal(t, expectedLeft, output.GetCompareExpr().LeftColumnInfo.FieldId)
+	}
 	// A shared reference participates in both comparison forms under logical composition.
 	unary := unarySource(source.GetCompareExpr().LeftColumnInfo, planpb.OpType_GreaterThan, integerSource(7))
 	mixed := binarySource(planpb.BinaryExpr_LogicalAnd, source, unary)
-	_, joined := importSource(t, translator, mixed)
+	joined := importSource(t, translator, mixed)
 	root := joined.Root()
 	require.True(t, root.ChildAt(0).ChildAt(0).(*expressions.ReferenceExpression).ID().EqualsTo(root.ChildAt(1).ChildAt(0).(*expressions.ReferenceExpression).ID()))
 	rebuilt := logicalGraph(t, foundation.And, root.ChildAt(0), root.ChildAt(1))
 	output, err := translator.Export(ctx, joined, rebuilt)
 	require.NoError(t, err)
-	require.NoError(t, translator.ValidateCandidate(ctx, joined, output))
-	require.True(t, proto.Equal(mixed, output))
+	require.True(t, proto.Equal(expectedExport(mixed), output))
 	output.GetBinaryExpr().Left.GetCompareExpr().LeftColumnInfo.FieldId = 999
 	require.Equal(t, int64(101), output.GetBinaryExpr().Right.GetUnaryRangeExpr().ColumnInfo.FieldId)
 	again, err := translator.Export(ctx, joined, rebuilt)
 	require.NoError(t, err)
-	require.True(t, proto.Equal(mixed, again))
-	assertFailure(t, translator.ValidateCandidate(ctx, joined, output), translation.TranslationDefect, translation.StageCandidateValidation)
-	for _, change := range []func(*planpb.Expr){
-		func(e *planpb.Expr) {
-			n := e.GetCompareExpr()
-			n.LeftColumnInfo, n.RightColumnInfo = n.RightColumnInfo, n.LeftColumnInfo
-		},
-		func(e *planpb.Expr) { e.GetCompareExpr().Op = planpb.OpType_NotEqual },
-		func(e *planpb.Expr) { e.IsTemplate = false },
-		func(e *planpb.Expr) { e.GetCompareExpr().ProtoReflect().SetUnknown([]byte{0xa0, 0x06, 1}) },
-	} {
-		candidate := proto.Clone(source).(*planpb.Expr)
-		change(candidate)
-		assertFailure(t, translator.ValidateCandidate(ctx, imported, candidate), translation.TranslationDefect, translation.StageCandidateValidation)
-	}
+	require.True(t, proto.Equal(expectedExport(mixed), again))
 }

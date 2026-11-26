@@ -73,17 +73,32 @@ func TestEmptyPipelineMixedMappingsAndMetadata(t *testing.T) {
 	input := orchestration.AttemptInput{
 		Original: source, SchemaView: view,
 	}
+	// Explicit executable expectation: no native templates, expanded range, sorted membership.
+	expected := proto.Clone(source).(*planpb.Expr)
+	expected.GetBinaryExpr().Left.GetBinaryExpr().Right.IsTemplate = false
+	expectedCursor := expected.GetBinaryExpr().Right
+	expectedCursor.GetBinaryExpr().Left.IsTemplate = false
+	expectedCursor = expectedCursor.GetBinaryExpr().Right
+	expectedCursor.GetBinaryExpr().Left = binary(planpb.BinaryExpr_LogicalAnd,
+		&planpb.Expr{Expr: &planpb.Expr_UnaryRangeExpr{UnaryRangeExpr: &planpb.UnaryRangeExpr{ColumnInfo: columns[2], Op: planpb.OpType_GreaterEqual, Value: rangeExpr.GetBinaryRangeExpr().LowerValue}}},
+		&planpb.Expr{Expr: &planpb.Expr_UnaryRangeExpr{UnaryRangeExpr: &planpb.UnaryRangeExpr{ColumnInfo: columns[2], Op: planpb.OpType_LessThan, Value: rangeExpr.GetBinaryRangeExpr().UpperValue}}})
+	expectedCursor = expectedCursor.GetBinaryExpr().Right
+	expectedCursor.GetBinaryExpr().Left.IsTemplate = false
+	expectedTermExpr := expectedCursor.GetBinaryExpr().Left.GetUnaryExpr().Child
+	expectedTermExpr.IsTemplate = false
+	expectedTermExpr.GetTermExpr().TemplateVariableName = ""
+	expectedTermExpr.GetTermExpr().Values[0], expectedTermExpr.GetTermExpr().Values[1] = expectedTermExpr.GetTermExpr().Values[1], expectedTermExpr.GetTermExpr().Values[0]
 	placementCalls := 0
 	result, err := orchestration.RoundTrip(context.Background(), input, func(candidate *planpb.Expr) error {
 		placementCalls++
-		require.True(t, proto.Equal(before, candidate), "placement must receive the complete empty-pipeline output")
+		require.True(t, proto.Equal(expected, candidate), "placement must receive the complete empty-pipeline output")
 		return nil
 	})
 	require.NoError(t, err)
 	require.Equal(t, orchestration.OutcomeTranslated, result.Outcome(), "retention cannot satisfy fidelity")
 	require.Equal(t, 1, placementCalls)
 	output := result.Candidate()
-	require.True(t, proto.Equal(before, output), "preserve forms, bounds, templates, key flags and membership order")
+	require.True(t, proto.Equal(expected, output), "preserve executable values and schema flags")
 
 	// Mutate new mapping payloads and metadata to detect aliases into the borrowed input.
 	cursor := output.GetBinaryExpr().Right
@@ -91,10 +106,10 @@ func TestEmptyPipelineMixedMappingsAndMetadata(t *testing.T) {
 	require.NotNil(t, outComparison)
 	outComparison.LeftColumnInfo.IsClusteringKey = false
 	cursor = cursor.GetBinaryExpr().Right
-	outRange := cursor.GetBinaryExpr().Left.GetBinaryRangeExpr()
+	outRange := cursor.GetBinaryExpr().Left.GetBinaryExpr().Left.GetUnaryRangeExpr()
 	require.NotNil(t, outRange)
-	outRange.LowerValue.Val = &planpb.GenericValue_FloatVal{FloatVal: 99}
-	outRange.UpperTemplateVariableName = "changed"
+	outRange.Value.Val = &planpb.GenericValue_FloatVal{FloatVal: 99}
+	outRange.TemplateVariableName = "changed"
 	cursor = cursor.GetBinaryExpr().Right
 	outTerm := cursor.GetBinaryExpr().Left.GetUnaryExpr().Child.GetTermExpr()
 	require.NotNil(t, outTerm)

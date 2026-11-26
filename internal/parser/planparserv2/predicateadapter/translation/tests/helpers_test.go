@@ -55,13 +55,11 @@ func opaqueFixture(t *testing.T, typ schemapb.DataType, nullable bool) (*transla
 	return translator, source, field
 }
 
-func importSource(t *testing.T, translator *translation.Translator, source *planpb.Expr) (*translation.AdmissionPlan, *translation.ImportResult) {
+func importSource(t *testing.T, translator *translation.Translator, source *planpb.Expr) *translation.ImportResult {
 	t.Helper()
-	admitted, err := translator.Admit(context.Background(), source)
+	imported, err := translator.Import(context.Background(), source)
 	require.NoError(t, err)
-	imported, err := translator.Import(context.Background(), admitted)
-	require.NoError(t, err)
-	return admitted, imported
+	return imported
 }
 
 func assertFailure(t *testing.T, err error, kind translation.FailureKind, stage translation.Stage) {

@@ -1,5 +1,7 @@
 # Predicate adapter package setup
 
+Current translation contract (2026-11-26): Import(ctx, source) checks coverage and constructs the graph in one traversal; Export reconstructs the candidate. There is no separate admission phase or route table. production trusts the paired translator. There are no pre-export graph-validation or post-export candidate-validation passes. Round-trip fidelity and ownership are checked in tests; the Milvus expression-placement callback still runs before acceptance. The sections below describe the implementation milestones; validation details superseded by this contract are historical.
+
 This package establishes the Milvus-owned boundary for paired expression translation. The `values` subpackage exposes the bundled stateless ValueFactory as `values.Factory` through its public interface and supplies shared immutable NonNull/MayNull descriptors for Bool, Int8/16/32/64 and Float32/64. Factory capability remains broader than translator admission. Paired opaque preservation, native logical forms, unary/field comparisons, binary ranges and scalar membership are implemented for the documented D2 domains; standalone orchestration is implemented in `orchestration/`, while production wiring remains pending.
 
 ## Dependency resolution
@@ -68,7 +70,7 @@ Three schema tests cover column scope, datatype-independent metadata consistency
 
 `schema/field_registry.go` (`schema.NewFieldRegistry`) owns one session token and one field-ID map per registry. `FieldRegistry.BindColumn` checks the pinned schema, validates reference nullability and reuses an existing identity only when the full Type agrees. The translator supplies the correctly derived immutable Type; the registry does not implement datatype conversion or a Bool/Int64 whitelist.
 
-`FieldRegistry.ResolveColumn` accepts canonical keys through the public ColumnID interface, verifies the session prefix, decodes the original Milvus field ID, and checks registration, exact key and full Type. It returns the checked schema/ColumnInfo association for reverse translation without registering anything or refreshing the schema. Returned `FieldBinding` values expose `ColumnID`, `Type`, `Field` and `ColumnInfo` accessors while keeping their fields private; their IDs/Types are immutable and protobuf metadata remains borrowed read-only. Export must copy metadata into fresh output, with occurrence-specific provenance supplied separately.
+`FieldRegistry.ResolveColumn` accepts canonical keys through the public ColumnID interface, verifies the session prefix, decodes the original Milvus field ID, and checks registration, exact key and full Type. It returns the checked schema/ColumnInfo association for reverse translation without registering anything or refreshing the schema. Returned `FieldBinding` values expose `ColumnID`, `Type`, `Field` and `NewColumnInfo` methods while keeping their fields private; their IDs/Types are immutable and FieldSchema remains borrowed read-only. Canonical ColumnInfo is stored once in the binding; NewColumnInfo creates an independent scalar copy for export.
 
 Three focused tests verify binding reuse, consistency failures and isolated registry resolution, including compatible external IDs, nullable/narrow fields and foreign/unregistered keys. Registration is sequential; later validation/export must use the registry read-only. No caching, row binding or production wiring is included.
 
@@ -118,25 +120,25 @@ Live version replacement and old/new-bundle verification are deferred. This API 
 
 ## Paired opaque translation
 
-`translation.New` captures the runtime capabilities, pinned schema view and a value snapshot of `runtime.PrimitiveTypes`. The snapshot retains shared descriptor pointers; setup checks every admitted NonNull numeric descriptor and all 38 comparison signatures. `Admit` selects complete routing before `Import` allocates an opaque registry and graph. `Export` checks the actual graph before reconstructing a fresh protobuf; `ValidateCandidate` independently inspects emitted content. Admitted/imported state belongs to its creating translator; each import has distinct opaque identities.
+`translation.New` captures the runtime capabilities, pinned schema view and a value snapshot of `runtime.PrimitiveTypes`. The snapshot retains shared descriptor pointers; setup checks every admitted NonNull numeric descriptor and all 38 comparison signatures. Import checks coverage and constructs the graph in one traversal. `Export` reconstructs a fresh protobuf from a valid graph matching its import associations. Admitted/imported state belongs to its creating translator; each import has distinct opaque identities.
 
 The initial O1 route preserves top-level scalar `IS NULL`/`IS NOT NULL` over Bool, Int8/16/32/64, Float, Double and VarChar, including nullable fields; its result is NonNull Bool. Unknown fields, unsupported scopes/domains and unknown-result calls remain coverage misses. Malformed known payloads and schema mismatches remain source defects. M02.4 composes this route with native TRUE/NOT/binary AND/OR. No evaluation, optimizer pass or production caller is enabled. Source/schema data must remain immutable throughout the attempt; output protobufs are independent deep copies.
 
-Stage state and dispatch live in `admission.go`, `import.go`, `graph_validation.go`, `export.go` and `candidate_validation.go`; `mapping_opaque.go` keeps the paired opaque handlers together. Independent utilities live in `translation/utils/`, while occurrence state and stage failures remain in the translation package.
+Stage state and dispatch live in `import.go` and `export.go`; `import_opaque.go` and `export_opaque.go` hold the respective opaque handlers. Independent utilities live in `translation/utils/`, while graph state and stage failures remain in the translation package.
 
-`translation/tests/mapping_opaque_test.go` covers the approved domains, failure categories, actual graph identity/Type checks, independent output and candidate validation, foreign ownership and cancellation. These tests establish the isolated preservation path, not Milvus execution parity or parser integration.
+`translation/tests/roundtrip_opaque_test.go` covers the approved domains, failure categories, actual graph identity/Type checks, independent output and candidate validation, foreign ownership and cancellation. These tests establish the isolated preservation path, not Milvus execution parity or parser integration.
 
 ## Native logical composition
 
-`translation/mapping_logical.go` pairs AlwaysTrueExpr with a NonNull Bool true literal, UnaryExpr(Not) with NOT, and BinaryExpr(LogicalAnd/LogicalOr) with exactly binary AND/OR. FALSE remains NOT TRUE. Admission records ordered child routes and requires every child to have an admitted NonNull Bool result; unsupported children propagate coverage and malformed known children remain defects even after an unsupported sibling.
+`translation/import_logical.go` pairs AlwaysTrueExpr with a NonNull Bool true literal, UnaryExpr(Not) with NOT, and BinaryExpr(LogicalAnd/LogicalOr) with exactly binary AND/OR. FALSE remains NOT TRUE. Import visits ordered children and requires NonNull Bool results; it stops at the first coverage miss or source defect.
 
-Import follows routes per occurrence without simplification or evaluation. Graph validation checks operator, arity, Type and ordered child correspondence. Export reads actual graph operators/children and constructs fresh native messages, retaining each source occurrence's IsTemplate flag. Candidate validation independently checks emitted forms and children. Opaque regions stay terminal and are copied only after identity resolution.
+Import constructs child expressions directly without simplification or evaluation. Export reads actual graph operators/children and constructs fresh native messages without template metadata. No graph/candidate validation pass runs. Opaque regions stay terminal and are copied after identity resolution.
 
-`translation/tests/mapping_logical_test.go` covers mixed trees, shared/equal occurrences, distinct metadata, independent output, coverage/defect propagation, changed graphs/candidates, n-ary rejection and cancellation throughout traversal. This verifies isolated empty-pipeline translation, not parser integration or C++ runtime parity. N-ary export remains a pre-rewriter follow-up.
+`translation/tests/roundtrip_logical_test.go` covers mixed trees, shared/equal occurrences, distinct metadata, independent output, coverage/defect propagation, changed graphs/candidates, n-ary export and cancellation throughout traversal. This verifies isolated empty-pipeline translation, not parser integration or C++ runtime parity. N-ary export is implemented in E03.
 
 ## Field and literal operand codecs
 
-`translation/operands.go` supplies private admission, import, graph checks, export and candidate checks for embedded top-level NonNull Bool, Int8/16/32/64, Float32/64 and VarChar operands. Field admission reuses the pinned schema view; import/export use the owning field registry and verify the expected field role. Each operand retains its own ColumnInfo for fresh output instead of using the first registry binding's metadata.
+`translation/operands.go` supplies private admission, import, graph checks, export and candidate checks for embedded top-level NonNull Bool, Int8/16/32/64, Float32/64 and VarChar operands. Field admission reuses the pinned schema view; import/export use the owning field registry and verify the expected field role. Import uses temporary source descriptors; export copies canonical ColumnInfo from the actual reference binding.
 
 Literal admission checks actual GenericValue oneof arms, preserving false, zero and the complete signed Int64 range. Export reads exact public scalar payloads after Type/null/content checks and allocates a fresh message and arm. Small operand associations borrow immutable source metadata; they do not introduce bare ColumnExpr/ValueExpr predicate routes.
 
@@ -146,7 +148,7 @@ The wider codecs preserve declared integer/float widths and VarChar schema byte 
 
 ## Unary comparisons
 
-`translation/mapping_unary_range.go` pairs NonNull Int64 equality/inequality/order comparisons and NonNull Bool equality/inequality with field-first comparison calls. Admission requires concrete matching literal payloads and empty ExtraValues. Import uses the pinned runtime/context and one lazily allocated field registry per import; embedded operand associations retain occurrence-specific metadata.
+`translation/import_unary_range.go` pairs NonNull Int64 equality/inequality/order comparisons and NonNull Bool equality/inequality with field-first comparison calls. Admission requires concrete matching literal payloads and empty ExtraValues. Import uses the pinned runtime/context and one lazily allocated field registry per import; temporary operand descriptors are discarded after graph construction.
 
 Graph checks require the retained context, canonical handle/operator, ordered field identity and exact literal content. Export reads actual operands and emits a fresh specialized UnaryRangeExpr, preserving IsTemplate and TemplateVariableName; candidate checks independently inspect the emitted message. Wider/nullable comparisons and Bool ordering remain coverage misses. Casts remain deferred.
 
@@ -154,25 +156,25 @@ Five tests cover all eight mappings and reconstructed equivalent calls, mixed lo
 
 ## Field comparisons
 
-`translation/mapping_compare.go` pairs CompareExpr with ordered reference/reference calls for NonNull same-width Int8/16/32/64 and Float32/64 (six operators), plus Bool equality/inequality. `functions/numeric_comparisons.go` and runtime assembly add 30 numeric declarations to the original eight. Mixed Types, nullable operands, VARCHAR and Bool ordering remain coverage misses; M04's unary scope is unchanged.
+`translation/import_compare.go` pairs CompareExpr with ordered reference/reference calls for NonNull same-width Int8/16/32/64 and Float32/64 (six operators), plus Bool equality/inequality. `functions/numeric_comparisons.go` and runtime assembly add 30 numeric declarations to the original eight. Mixed Types, nullable operands, VARCHAR and Bool ordering remain coverage misses; M04's unary scope is unchanged.
 
-Both comparison forms share lazy registry creation and actual context/handle/operator checks in `translation/comparison.go`. Export preserves both occurrence-specific ColumnInfo objects and IsTemplate in independently owned specialized output. Swapped or foreign references fail validation, and same-field floating comparisons are never folded. Three translation tests cover mappings, admission and mixed-form ownership/rejection; one declaration test covers binding. No evaluation, optimizer pass, parser wiring or downstream runtime parity is enabled by this step.
+Both comparison forms share lazy registry creation and actual context/handle/operator checks in `translation/comparison.go`. Export selects canonical ColumnInfo from each actual reference binding and clears native template metadata. Swapped registered references are supported; foreign references fail resolution, and same-field floating comparisons are never folded. Three translation tests cover mappings, admission and mixed-form ownership/rejection; one declaration test covers binding. No evaluation, optimizer pass, parser wiring or downstream runtime parity is enabled by this step.
 
 ## Translation test layout
 
 `translation/tests/` contains public-stage tests and their shared fixtures in `helpers_test.go`. Tests for private operand codecs, provenance and failure construction remain in `translation/`; standalone utility tests remain in `translation/utils/`. Run `go test` with `./internal/parser/planparserv2/predicateadapter/translation/...` to include all three packages, using the flags documented above.
 
-Variant handlers and associated files follow `mapping_<variant>[_<role>].go`; tests append `_test.go`. For example, `mapping_opaque_associations_test.go` covers private occurrence associations. Shared facilities and independent utilities retain their descriptive names.
+Variant handlers follow `import_<variant>.go` and `export_<variant>.go`. Tests covering both directions use `roundtrip_<variant>_test.go`; direction-specific tests use `import_` or `export_`. For example, `export_opaque_bindings_test.go` checks binding-based export without occurrence records. Shared facilities and independent utilities retain their descriptive names.
 
 ## Binary ranges
 
-`translation/mapping_binary_range.go` pairs numeric BinaryRangeExpr with an ordered AND of lower and upper comparison calls over one registered reference. Admission requires exact NonNull same-Type numeric bounds; out-of-width, conversion-dependent, NaN, nullable and VARCHAR cases remain coverage misses. Missing/malformed operands and parser-invalid bound ordering remain source defects.
+`translation/import_binary_range.go` pairs numeric BinaryRangeExpr with an ordered AND of lower and upper comparison calls over one registered reference. Admission requires exact NonNull same-Type numeric bounds; out-of-width, conversion-dependent, NaN, nullable and VARCHAR cases remain coverage misses. Missing/malformed operands and parser-invalid bound ordering remain source defects.
 
 A retained range descriptor distinguishes generated comparison roles from an ordinary conjunction, even when graphs are equal or shared. Export reads actual checked payloads/operators, preserves inclusivity and separate template names, and constructs independently owned specialized output. Three mapping tests plus the shared comparison cancellation test cover these contracts. Production wiring and execution parity remain pending.
 
 ## Scalar membership
 
-`translation/mapping_term.go` pairs homogeneous nonempty TermExpr with SpecialFormIn for NonNull Bool, integer widths, Float32/64 and bounded VARCHAR. Target and candidates retain identical full Types; no catalog registration is needed. Existing NOT handling supplies NOT IN. Empty/reverse/nullable membership, coercion-dependent candidates, NaNs and over-bound strings remain coverage misses.
+`translation/import_term.go` pairs homogeneous nonempty TermExpr with SpecialFormIn for NonNull Bool, integer widths, Float32/64 and bounded VARCHAR. Target and candidates retain identical full Types; no catalog registration is needed. Existing NOT handling supplies NOT IN. Empty/reverse/nullable membership, coercion-dependent candidates, NaNs and over-bound strings remain coverage misses.
 
 Admission accepts unsorted and duplicate candidates and preserves their sequence without normalization. Import preserves target-first candidate order; graph and candidate checks enforce exact roles, Types, payloads and metadata. Export allocates fresh specialized messages and candidate slices. Three mapping tests cover domains, homogeneous candidate coverage, graph/candidate rejection and ownership; `tests/cancellation_test.go` covers cancellation across unary, range and term mappings. No evaluation or production wiring is enabled.
 
@@ -184,7 +186,7 @@ M08 verifies every implemented mapping in one mixed-domain tree and checks sourc
 
 ## D2 completion and D3 handoff
 
-D2 M01–M09 are complete for the achieved mapping matrix. Whole-tree conformance tests in `translation/tests/conformance_test.go` verify independent candidate ownership with shared native graph nodes and occurrence-specific metadata, plus zero Evaluate/implementation calls through every translation stage. Production comparison bindings remain placeholders; successful translation does not imply executable folding support.
+D2 M01–M09 are complete for the achieved mapping matrix. Whole-tree conformance tests in `translation/tests/conformance_test.go` verify independent candidate ownership with shared native graph nodes, plus zero Evaluate/implementation calls through every translation stage. Production comparison bindings remain placeholders; successful translation does not imply executable folding support.
 
 The detailed mapping limits, verification commands, stage APIs, lifetime requirements and remaining acceptance responsibilities are recorded in [M09 — Ownership and D3 handoff](../../../../third-party/predicate-optimization/private-docs/Working/MilvusIntegration/PhaseD-ImplementationAndConformance/D2-PairedTranslators/M09-OwnershipAndD3Handoff.md). D3 now composes candidate validation, trusted placement validation and final cancellation/acceptance into one synchronous operation. No parser hook or live-Milvus parity is claimed here.
 
@@ -193,3 +195,9 @@ The detailed mapping limits, verification commands, stage APIs, lifetime require
 `orchestration.ObtainRuntime` captures explicit opt-in and the shared runtime outcome. `orchestration.RoundTrip` takes that runtime provision via `AttemptInput.RuntimeProvision`, borrowed source/schema, request context and a trusted read-only placement callback. It returns a fresh accepted candidate, a candidate-free retention result, or an error recognized by `orchestration.IsAdapterAbort`. The parser/proxy integration is not enabled.
 
 D3 conformance covers local stage failures, cancellation, successive-attempt output isolation and independent zero-evaluation/implementation counters with real import/export. A private per-call translator constructor supports fault tests without global overrides or public test hooks. See [M05 — Conformance and D4 handoff](../../../../third-party/predicate-optimization/private-docs/Working/MilvusIntegration/PhaseD-ImplementationAndConformance/D3-SessionOrchestration/M05-ConformanceAndD4Handoff.md) for evidence and remaining D4, concurrent-operation and wired-route verification.
+
+## Graph-driven export
+
+Export follows the actual optimizer graph and field/opaque bindings, without source-occurrence matching. Native output clears template metadata, expands numeric ranges to comparison conjunctions, balances n-ary AND/OR, and sorts fresh scalar IN candidates. FALSE exports as NOT TRUE. Source import coverage is unchanged. Import returns expressions directly; ImportResult retains only its owner, root graph, field registry and opaque registry. There is no occurrence table.
+
+`UnsupportedExpression` covers valid but unsupported expressions at either Import or Export. Orchestration retains the validated original and publishes no partial candidate. Foreign identities remain translation defects. Native execution/pruning verification is tracked separately in E05.

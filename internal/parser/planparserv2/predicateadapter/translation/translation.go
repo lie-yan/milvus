@@ -1,4 +1,4 @@
-// Package translation owns paired expression mappings and occurrence provenance, independent of runtime publication and caller outcome policy.
+// Package translation owns paired expression translation and field/opaque bindings, independent of runtime publication and caller outcome policy.
 package translation
 
 import (

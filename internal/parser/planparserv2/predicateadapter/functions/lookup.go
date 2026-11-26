@@ -15,16 +15,13 @@ import (
 // Resolves an exact qualified name using argument Types only, without evaluation or coercion.
 func (c *FunctionCatalog) LookupFunction(name FunctionName, args []types.Type) (functioninterfaces.FunctionHandle, error) {
 	c.assertLookupInputs(args)
-	return c.lookup(args, func(entry *functionEntry) bool { return entry.name == name })
+	return c.lookup(args, c.byName[name])
 }
 
 // Resolves a registered built-in identity independently of semantic and diagnostic names.
 func (c *FunctionCatalog) LookupBuiltInFunction(name shared.BuiltInFunctionName, args []types.Type) (functioninterfaces.FunctionHandle, error) {
 	c.assertLookupInputs(args)
-	return c.lookup(args, func(entry *functionEntry) bool {
-		registered, present := entry.metadata.BuiltInName().Get()
-		return present && registered == name
-	})
+	return c.lookup(args, c.byBuiltIn[name])
 }
 
 // Resolves a binary comparison after validating the requested operator family.
@@ -52,10 +49,7 @@ func (c *FunctionCatalog) ArithmeticFunction(op foundation.OperatorType, args []
 
 // Filters operator metadata through the same binder used by named and built-in lookup.
 func (c *FunctionCatalog) lookupOperator(op foundation.OperatorType, args []types.Type) (functioninterfaces.FunctionHandle, error) {
-	return c.lookup(args, func(entry *functionEntry) bool {
-		registered, present := entry.metadata.Operator().Get()
-		return present && registered == op
-	})
+	return c.lookup(args, c.byOperator[op])
 }
 
 // Checks programmer preconditions before route validation, even when no candidate exists.
@@ -67,12 +61,10 @@ func (c *FunctionCatalog) assertLookupInputs(args []types.Type) {
 }
 
 // Selects a unique binding among matching entries for every lookup route.
-func (c *FunctionCatalog) lookup(args []types.Type, matches func(*functionEntry) bool) (functioninterfaces.FunctionHandle, error) {
+func (c *FunctionCatalog) lookup(args []types.Type, overloads *overloadSet) (functioninterfaces.FunctionHandle, error) {
 	selected := -1
-	for index, entry := range c.entries {
-		if !matches(entry) {
-			continue
-		}
+	for _, index := range overloads.candidates(args) {
+		entry := c.entries[index]
 		check := shared.ProbeFunctionBinding(entry.metadata, args)
 		if !check.Supported() {
 			if check.Is(shared.ErrContractViolation) {

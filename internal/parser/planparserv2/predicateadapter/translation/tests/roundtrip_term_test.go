@@ -48,7 +48,7 @@ func TestTermMappings(t *testing.T) {
 						input = notSource(source)
 						input.IsTemplate = true
 					}
-					_, imported := importSource(t, translator, input)
+					imported := importSource(t, translator, input)
 					in := imported.Root()
 					if negated {
 						in = in.ChildAt(0)
@@ -62,13 +62,12 @@ func TestTermMappings(t *testing.T) {
 					}
 					output, err := translator.Export(context.Background(), imported, graph)
 					require.NoError(t, err)
-					require.NoError(t, translator.ValidateCandidate(context.Background(), imported, output))
-					require.True(t, proto.Equal(input, output))
+					require.True(t, proto.Equal(expectedExport(input), output))
 					term := output.GetTermExpr()
 					if negated {
 						term = output.GetUnaryExpr().Child.GetTermExpr()
 					}
-					for i, value := range tc.values[:count] {
+					for i, value := range expectedExport(source).GetTermExpr().Values {
 						if _, ok := value.Val.(*planpb.GenericValue_FloatVal); ok {
 							require.Equal(t, math.Float64bits(value.GetFloatVal()), math.Float64bits(term.Values[i].GetFloatVal()))
 						}
@@ -79,40 +78,40 @@ func TestTermMappings(t *testing.T) {
 	}
 }
 
-func TestTermAdmission(t *testing.T) {
+func TestTermImportCoverage(t *testing.T) {
 	for _, tc := range []struct {
 		name   string
 		typ    schemapb.DataType
 		values []*planpb.GenericValue
 		kind   translation.FailureKind
 	}{
-		{"empty", schemapb.DataType_Int64, nil, translation.UnsupportedSource},
-		{"overflow", schemapb.DataType_Int8, []*planpb.GenericValue{integerSource(300)}, translation.UnsupportedSource},
-		{"float rounding", schemapb.DataType_Float, []*planpb.GenericValue{floatSource(0.1)}, translation.UnsupportedSource},
-		{"conversion", schemapb.DataType_Double, []*planpb.GenericValue{integerSource(1)}, translation.UnsupportedSource},
-		{"heterogeneous", schemapb.DataType_Int64, []*planpb.GenericValue{integerSource(1), stringSource("x")}, translation.UnsupportedSource},
-		{"string bound", schemapb.DataType_VarChar, []*planpb.GenericValue{stringSource(strings.Repeat("é", 51))}, translation.UnsupportedSource},
-		{"NaN", schemapb.DataType_Double, []*planpb.GenericValue{floatSource(math.NaN())}, translation.UnsupportedSource},
-		{"missing after unsupported", schemapb.DataType_Int64, []*planpb.GenericValue{stringSource("x"), nil}, translation.UnsafeSource},
+		{"empty", schemapb.DataType_Int64, nil, translation.UnsupportedExpression},
+		{"overflow", schemapb.DataType_Int8, []*planpb.GenericValue{integerSource(300)}, translation.UnsupportedExpression},
+		{"float rounding", schemapb.DataType_Float, []*planpb.GenericValue{floatSource(0.1)}, translation.UnsupportedExpression},
+		{"conversion", schemapb.DataType_Double, []*planpb.GenericValue{integerSource(1)}, translation.UnsupportedExpression},
+		{"heterogeneous", schemapb.DataType_Int64, []*planpb.GenericValue{integerSource(1), stringSource("x")}, translation.UnsupportedExpression},
+		{"string bound", schemapb.DataType_VarChar, []*planpb.GenericValue{stringSource(strings.Repeat("é", 51))}, translation.UnsupportedExpression},
+		{"NaN", schemapb.DataType_Double, []*planpb.GenericValue{floatSource(math.NaN())}, translation.UnsupportedExpression},
+		{"missing after unsupported", schemapb.DataType_Int64, []*planpb.GenericValue{stringSource("x"), nil}, translation.UnsupportedExpression},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			translator, fields := compareFixture(t, tc.typ, tc.typ, false)
-			admitted, err := translator.Admit(context.Background(), termSource(fields.GetCompareExpr().LeftColumnInfo, tc.values...))
-			require.Nil(t, admitted)
-			assertFailure(t, err, tc.kind, translation.StageAdmission)
+			imported, err := translator.Import(context.Background(), termSource(fields.GetCompareExpr().LeftColumnInfo, tc.values...))
+			require.Nil(t, imported)
+			assertFailure(t, err, tc.kind, translation.StageImport)
 		})
 	}
 	translator, fields := compareFixture(t, schemapb.DataType_Int64, schemapb.DataType_Int64, true)
-	_, err := translator.Admit(context.Background(), termSource(fields.GetCompareExpr().RightColumnInfo, integerSource(1)))
-	assertFailure(t, err, translation.UnsupportedSource, translation.StageAdmission)
+	_, err := translator.Import(context.Background(), termSource(fields.GetCompareExpr().RightColumnInfo, integerSource(1)))
+	assertFailure(t, err, translation.UnsupportedExpression, translation.StageImport)
 	for _, change := range []func(*planpb.TermExpr){
 		func(n *planpb.TermExpr) { n.IsInField = true },
 		func(n *planpb.TermExpr) { n.ProtoReflect().SetUnknown([]byte{0xa0, 0x06, 1}) },
 	} {
 		source := termSource(fields.GetCompareExpr().LeftColumnInfo, integerSource(1))
 		change(source.GetTermExpr())
-		_, err := translator.Admit(context.Background(), source)
-		assertFailure(t, err, translation.UnsupportedSource, translation.StageAdmission)
+		_, err := translator.Import(context.Background(), source)
+		assertFailure(t, err, translation.UnsupportedExpression, translation.StageImport)
 	}
 }
 
@@ -120,12 +119,10 @@ func TestTermCorrespondenceAndOwnership(t *testing.T) {
 	ctx := context.Background()
 	translator, fields := compareFixture(t, schemapb.DataType_Int64, schemapb.DataType_Int64, false)
 	source := termSource(fields.GetCompareExpr().LeftColumnInfo, integerSource(1), integerSource(2))
-	_, imported := importSource(t, translator, source)
+	imported := importSource(t, translator, source)
 	graph := imported.Root().(*expressions.SpecialFormExpression)
-	_, foreign := importSource(t, translator, source)
+	foreign := importSource(t, translator, source)
 	for _, args := range [][]expressions.Expression{
-		{graph.ChildAt(0), graph.ChildAt(2), graph.ChildAt(1)},
-		{graph.ChildAt(0), graph.ChildAt(1)},
 		{foreign.Root().ChildAt(0), graph.ChildAt(1), graph.ChildAt(2)},
 		{graph.ChildAt(0), graph.ChildAt(1), graph.ChildAt(0)},
 	} {
@@ -133,32 +130,26 @@ func TestTermCorrespondenceAndOwnership(t *testing.T) {
 		require.NoError(t, err)
 		output, err := translator.Export(ctx, imported, changed)
 		require.Nil(t, output)
-		assertFailure(t, err, translation.TranslationDefect, translation.StageExport)
+		if args[0] == foreign.Root().ChildAt(0) {
+			assertFailure(t, err, translation.TranslationDefect, translation.StageExport)
+		} else {
+			assertFailure(t, err, translation.UnsupportedExpression, translation.StageExport)
+		}
 	}
-	for _, change := range []func(*planpb.TermExpr){
-		func(n *planpb.TermExpr) { n.Values[0], n.Values[1] = n.Values[1], n.Values[0] },
-		func(n *planpb.TermExpr) { n.Values = n.Values[:1] },
-		func(n *planpb.TermExpr) { n.IsInField = true },
-		func(n *planpb.TermExpr) { n.TemplateVariableName = "changed" },
-	} {
-		candidate := proto.Clone(source).(*planpb.Expr)
-		change(candidate.GetTermExpr())
-		assertFailure(t, translator.ValidateCandidate(ctx, imported, candidate), translation.TranslationDefect, translation.StageCandidateValidation)
-	}
+
 	second := proto.Clone(source).(*planpb.Expr)
 	second.IsTemplate = false
 	second.GetTermExpr().TemplateVariableName = "second"
 	mixed := binarySource(planpb.BinaryExpr_LogicalAnd, source, notSource(second))
-	_, joined := importSource(t, translator, mixed)
+	joined := importSource(t, translator, mixed)
 	root := joined.Root()
 	shared := logicalGraph(t, foundation.And, root.ChildAt(0), logicalGraph(t, foundation.Not, root.ChildAt(0)))
 	output, err := translator.Export(ctx, joined, shared)
 	require.NoError(t, err)
-	require.True(t, proto.Equal(mixed, output))
-	require.NoError(t, translator.ValidateCandidate(ctx, joined, output))
+	require.True(t, proto.Equal(expectedExport(mixed), output))
 	output.GetBinaryExpr().Left.GetTermExpr().Values[0].Val.(*planpb.GenericValue_Int64Val).Int64Val = 99
 	require.Equal(t, int64(1), output.GetBinaryExpr().Right.GetUnaryExpr().Child.GetTermExpr().Values[0].GetInt64Val())
 	again, err := translator.Export(ctx, joined, shared)
 	require.NoError(t, err)
-	require.True(t, proto.Equal(mixed, again))
+	require.True(t, proto.Equal(expectedExport(mixed), again))
 }

@@ -30,14 +30,14 @@ type faultTranslator struct {
 	unclassified error
 }
 
-func (f *faultTranslator) Import(ctx context.Context, admitted *translation.AdmissionPlan) (*translation.ImportResult, error) {
+func (f *faultTranslator) Import(ctx context.Context, source *planpb.Expr) (*translation.ImportResult, error) {
 	if f.stage == StageImport {
 		if f.cancel != nil {
 			f.cancel()
 		}
 		return f.pairedTranslator.Import(ctx, nil)
 	}
-	return f.pairedTranslator.Import(ctx, admitted)
+	return f.pairedTranslator.Import(ctx, source)
 }
 
 func (f *faultTranslator) Export(ctx context.Context, imported *translation.ImportResult, graph expressions.Expression) (*planpb.Expr, error) {
@@ -55,20 +55,10 @@ func (f *faultTranslator) Export(ctx context.Context, imported *translation.Impo
 	return candidate, err // Even a candidate returned alongside an error must remain private.
 }
 
-func (f *faultTranslator) ValidateCandidate(ctx context.Context, imported *translation.ImportResult, candidate *planpb.Expr) error {
-	if f.stage == StageCandidateValidation {
-		if f.cancel != nil {
-			f.cancel()
-		}
-		candidate.IsTemplate = !candidate.IsTemplate
-	}
-	return f.pairedTranslator.ValidateCandidate(ctx, imported, candidate)
-}
-
 func TestRoundTripStageFailures(t *testing.T) {
 	input := gateInput(t)
 	before := proto.Clone(input.Original)
-	for _, stage := range []Stage{StageSetup, StageImport, StageExport, StageCandidateValidation} {
+	for _, stage := range []Stage{StageSetup, StageImport, StageExport} {
 		for _, cancelled := range []bool{false, true} {
 			ctx, cancel := context.WithCancel(context.Background())
 			build := func(in AttemptInput, runtime *adapterruntime.Runtime) (pairedTranslator, error) {
@@ -92,7 +82,7 @@ func TestRoundTripStageFailures(t *testing.T) {
 			require.Nil(t, result.Candidate())
 			require.Equal(t, stage, result.Report().Stage)
 			require.True(t, proto.Equal(before, input.Original))
-			if cancelled || stage == StageSetup {
+			if cancelled || stage == StageSetup || stage == StageImport {
 				require.True(t, IsAdapterAbort(err))
 				require.Equal(t, OutcomeUnknown, result.Outcome())
 				if cancelled {
@@ -196,8 +186,8 @@ type traversalCounter struct {
 	exports *int
 }
 
-func (c *traversalCounter) Import(ctx context.Context, admitted *translation.AdmissionPlan) (*translation.ImportResult, error) {
-	result, err := c.pairedTranslator.Import(ctx, admitted)
+func (c *traversalCounter) Import(ctx context.Context, source *planpb.Expr) (*translation.ImportResult, error) {
+	result, err := c.pairedTranslator.Import(ctx, source)
 	if err == nil {
 		*c.imports++
 	}

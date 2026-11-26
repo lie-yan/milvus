@@ -108,9 +108,9 @@ func TestPredicateOptimizationPlanErrorProjection(t *testing.T) {
 				patch := mockey.Mock(translation.New).Return(nil, cause).Build()
 				defer patch.UnPatch()
 			case "unsafe source":
-				var admit func(*translation.Translator, context.Context, *planpb.Expr) (*translation.AdmissionPlan, error)
-				patch := mockey.Mock((*translation.Translator).Admit).Origin(&admit).To(func(tr *translation.Translator, ctx context.Context, _ *planpb.Expr) (*translation.AdmissionPlan, error) {
-					return admit(tr, ctx, &planpb.Expr{})
+				var importExpr func(*translation.Translator, context.Context, *planpb.Expr) (*translation.ImportResult, error)
+				patch := mockey.Mock((*translation.Translator).Import).Origin(&importExpr).To(func(tr *translation.Translator, ctx context.Context, _ *planpb.Expr) (*translation.ImportResult, error) {
+					return importExpr(tr, ctx, &planpb.Expr{})
 				}).Build()
 				defer patch.UnPatch()
 			}

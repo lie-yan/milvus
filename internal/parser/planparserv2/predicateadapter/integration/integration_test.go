@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/bytedance/mockey"
+	"github.com/lie-yan/predicate-optimization/expressions"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/protobuf/proto"
 
@@ -44,9 +45,9 @@ func TestPredicateOptimizationRetainsOriginal(t *testing.T) {
 				patch := mockey.Mock(adapterruntime.SharedRuntime).Return(nil, merr.ErrServiceUnavailable).Build()
 				defer patch.UnPatch()
 			case "translation defect":
-				var run func(*translation.Translator, context.Context, *translation.AdmissionPlan) (*translation.ImportResult, error)
-				patch := mockey.Mock((*translation.Translator).Import).Origin(&run).To(func(tr *translation.Translator, ctx context.Context, _ *translation.AdmissionPlan) (*translation.ImportResult, error) {
-					return run(tr, ctx, nil) // Real classified defect after successful admission.
+				var run func(*translation.Translator, context.Context, *translation.ImportResult, expressions.Expression) (*planpb.Expr, error)
+				patch := mockey.Mock((*translation.Translator).Export).Origin(&run).To(func(tr *translation.Translator, ctx context.Context, _ *translation.ImportResult, graph expressions.Expression) (*planpb.Expr, error) {
+					return run(tr, ctx, nil, graph) // Real classified defect in private export state.
 				}).Build()
 				defer patch.UnPatch()
 			}

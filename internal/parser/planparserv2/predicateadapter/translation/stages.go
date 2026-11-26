@@ -4,7 +4,6 @@ import (
 	"context"
 
 	"github.com/lie-yan/predicate-optimization/expressions"
-	expressionutils "github.com/lie-yan/predicate-optimization/expressions/utils"
 	"github.com/lie-yan/predicate-optimization/foundation"
 	functioninterfaces "github.com/lie-yan/predicate-optimization/functions/interfaces"
 	"github.com/lie-yan/predicate-optimization/types"
@@ -32,28 +31,16 @@ type Translator struct {
 	primitives adapterruntime.PrimitiveTypes
 }
 
-// Successful whole-source routing with no optimizer graph or registered identities.
-type AdmissionPlan struct {
-	// Exact translator that established the routes.
-	owner *Translator
-	// Immutable selected source positions.
-	routes []admittedRoute
-	// Complete predicate's route position.
-	root routeID
-}
-
-// One import's immutable graph associations and private preservation registry.
+// One imported graph and its field/opaque bindings.
 type ImportResult struct {
-	// Successful routing and pinned translator inputs.
-	admitted *AdmissionPlan
+	// Translator owning this graph and its pinned inputs.
+	owner *Translator
 	// Attempt-local preservation identities.
 	opaques *translationutils.OpaqueRegistry
 	// Lazily allocated on the first admitted field-bearing import.
 	fields *schema.FieldRegistry
-	// Source/graph positions, including distinct repeated occurrences.
-	occurrences []occurrence
-	// Complete graph's source position.
-	root occurrenceID
+	// Complete immutable expression graph.
+	root expressions.Expression
 }
 
 // Captures capabilities and verifies that the shared Types and comparison mappings agree.
@@ -94,6 +81,11 @@ func New(runtime Runtime, view *schema.View, primitives adapterruntime.Primitive
 	}
 	assertions.NotNil(t.factory)
 	assertions.NotNil(t.context)
+	// Only the concrete immutable runtime has already checked the complete catalog.
+	// Wrappers may override capabilities and must still satisfy the setup contract.
+	if _, validated := runtime.(*adapterruntime.Runtime); validated {
+		return t, nil
+	}
 	for _, typ := range []types.Type{boolean, primitives.Int8NonNull, primitives.Int16NonNull, primitives.Int32NonNull, integer, primitives.Float32NonNull, primitives.Float64NonNull} {
 		ops := []planpb.OpType{planpb.OpType_Equal, planpb.OpType_NotEqual}
 		if typ != boolean {
@@ -124,37 +116,18 @@ func New(runtime Runtime, view *schema.View, primitives adapterruntime.Primitive
 	return t, nil
 }
 
-// Selects complete native/opaque routing before creating any graph or registry.
-func (t *Translator) Admit(ctx context.Context, source *planpb.Expr) (*AdmissionPlan, error) {
-	a := &admitter{ctx: ctx, translator: t}
-	result, err := a.admitExpr(source)
-	if err != nil {
-		return nil, err
-	}
+// Translates the source in one traversal; a failed import returns no partial graph or associations.
+func (t *Translator) Import(ctx context.Context, source *planpb.Expr) (*ImportResult, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
-	}
-	if result.limitation != noLimitation {
-		return nil, newFailure(UnsupportedSource, StageAdmission, merr.Wrapf(merr.ErrServiceUnimplemented, "predicate translation: admission limitation %d", result.limitation))
-	}
-	return &AdmissionPlan{owner: t, routes: a.routes, root: result.route}, nil
-}
-
-// Consumes approved routes without reconsidering fallback and returns only a complete graph.
-func (t *Translator) Import(ctx context.Context, admitted *AdmissionPlan) (*ImportResult, error) {
-	if err := ctx.Err(); err != nil {
-		return nil, err
-	}
-	if admitted == nil || admitted.owner != t || admitted.root < 0 || int(admitted.root) >= len(admitted.routes) {
-		return nil, translationDefect(StageImport, "foreign or incomplete admission")
 	}
 	registry, err := translationutils.NewOpaqueRegistry()
 	if err != nil {
 		return nil, newFailure(TranslationDefect, StageImport, err)
 	}
-	result := &ImportResult{admitted: admitted, opaques: registry}
+	result := &ImportResult{owner: t, opaques: registry}
 	visitor := &importer{ctx: ctx, result: result}
-	root, err := visitor.importExpr(admitted.root)
+	root, err := visitor.importExpr(source)
 	if err != nil {
 		return nil, err
 	}
@@ -168,16 +141,20 @@ func (t *Translator) Import(ctx context.Context, admitted *AdmissionPlan) (*Impo
 // Returns the immutable imported root; mutable association tables remain private.
 func (r *ImportResult) Root() expressions.Expression {
 	assertions.NotNilPointer(r)
-	return r.occurrences[r.root].imported
+	return r.root
 }
 
-// Reconstructs a complete private protobuf from the supplied graph and owned associations.
+// Reconstructs a private protobuf from a valid graph paired with its import associations.
+// Graph validity and correct translation are caller preconditions; no graph-validation pass runs here.
 func (t *Translator) Export(ctx context.Context, imported *ImportResult, graph expressions.Expression) (*planpb.Expr, error) {
-	if err := t.checkGraph(ctx, imported, graph, StageExport); err != nil {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if err := t.checkOwner(imported, StageExport); err != nil {
 		return nil, err
 	}
 	visitor := &exporter{ctx: ctx, imported: imported}
-	candidate, err := visitor.exportExpr(imported.root, graph)
+	candidate, err := visitor.exportExpr(graph)
 	if err != nil {
 		return nil, err
 	}
@@ -187,42 +164,12 @@ func (t *Translator) Export(ctx context.Context, imported *ImportResult, graph e
 	return candidate, nil
 }
 
-// Inspects actual emitted data independently of exporter success, without accepting or attaching it.
-func (t *Translator) ValidateCandidate(ctx context.Context, imported *ImportResult, candidate *planpb.Expr) error {
-	if err := ctx.Err(); err != nil {
-		return err
-	}
-	if err := t.checkOwner(imported, StageCandidateValidation); err != nil {
-		return err
-	}
-	visitor := &candidateChecker{ctx: ctx, imported: imported}
-	if err := visitor.checkExpr(imported.root, candidate); err != nil {
-		return err
-	}
-	return ctx.Err()
-}
-
 // Rejects missing or foreign state before accessing attempt-local tables.
 func (t *Translator) checkOwner(imported *ImportResult, stage Stage) error {
-	if imported == nil || imported.admitted == nil || imported.admitted.owner != t || imported.opaques == nil || imported.root < 0 || int(imported.root) >= len(imported.occurrences) {
+	if imported == nil || imported.owner != t || imported.opaques == nil || imported.root == nil {
 		return translationDefect(stage, "foreign or incomplete imported state")
 	}
 	return nil
-}
-
-// Establishes framework validity before form-specific traversal; the framework helper itself is synchronous.
-func (t *Translator) checkGraph(ctx context.Context, imported *ImportResult, graph expressions.Expression, stage Stage) error {
-	if err := ctx.Err(); err != nil {
-		return err
-	}
-	if err := t.checkOwner(imported, stage); err != nil {
-		return err
-	}
-	if err := expressionutils.ValidateForOptimization(graph); err != nil {
-		return newFailure(TranslationDefect, stage, err)
-	}
-	visitor := &graphChecker{ctx: ctx, imported: imported, stage: stage}
-	return visitor.checkExpr(imported.root, graph)
 }
 
 // Marks an internal invariant failure at its consuming stage without a new wire error code.

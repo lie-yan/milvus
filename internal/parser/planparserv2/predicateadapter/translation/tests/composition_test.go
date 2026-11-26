@@ -88,7 +88,7 @@ func replaceLastGraph(t *testing.T, root, last expressions.Expression) expressio
 
 func TestAllMappingsCompose(t *testing.T) {
 	translator, source := compositionFixture(t)
-	_, imported := importSource(t, translator, source)
+	imported := importSource(t, translator, source)
 	graph := imported.Root()
 	// Native forms must remain exposed rather than succeeding through opaque copies.
 	for _, expected := range []any{&expressions.LogicalExpression{}, &expressions.CallExpression{}, &expressions.CallExpression{}, &expressions.LogicalExpression{}, &expressions.SpecialFormExpression{}} {
@@ -98,16 +98,15 @@ func TestAllMappingsCompose(t *testing.T) {
 	require.IsType(t, &expressions.OpaqueExpression{}, graph)
 	output, err := translator.Export(context.Background(), imported, imported.Root())
 	require.NoError(t, err)
-	require.NoError(t, translator.ValidateCandidate(context.Background(), imported, output))
-	require.True(t, proto.Equal(source, output))
+	require.True(t, proto.Equal(expectedExport(source), output))
 	parts := compositionParts(output)
 	require.Equal(t, planpb.OpType_NotEqual, parts[2].GetCompareExpr().Op)
-	require.Equal(t, float64(0.5), parts[3].GetBinaryRangeExpr().LowerValue.GetFloatVal())
-	require.Equal(t, []string{"z", "a", "z"}, []string{parts[4].GetTermExpr().Values[0].GetStringVal(), parts[4].GetTermExpr().Values[1].GetStringVal(), parts[4].GetTermExpr().Values[2].GetStringVal()})
+	require.Equal(t, float64(0.5), parts[3].GetBinaryExpr().Left.GetUnaryRangeExpr().Value.GetFloatVal())
+	require.Equal(t, []string{"a", "z", "z"}, []string{parts[4].GetTermExpr().Values[0].GetStringVal(), parts[4].GetTermExpr().Values[1].GetStringVal(), parts[4].GetTermExpr().Values[2].GetStringVal()})
 	require.Equal(t, planpb.NullExpr_IsNull, parts[5].GetNullExpr().Op)
 }
 
-func TestCompositionAdmissionAndLateGraphFailure(t *testing.T) {
+func TestCompositionImportCoverageAndLateGraphFailure(t *testing.T) {
 	ctx := context.Background()
 	translator, source := compositionFixture(t)
 	for _, tc := range []struct {
@@ -115,7 +114,7 @@ func TestCompositionAdmissionAndLateGraphFailure(t *testing.T) {
 		replacement *planpb.Expr
 		kind        translation.FailureKind
 	}{
-		{"no route", &planpb.Expr{Expr: &planpb.Expr_CallExpr{CallExpr: &planpb.CallExpr{FunctionName: "unknown"}}}, translation.UnsupportedSource},
+		{"no route", &planpb.Expr{Expr: &planpb.Expr_CallExpr{CallExpr: &planpb.CallExpr{FunctionName: "unknown"}}}, translation.UnsupportedExpression},
 		{"invalid source", &planpb.Expr{Expr: &planpb.Expr_TermExpr{TermExpr: &planpb.TermExpr{}}}, translation.UnsafeSource},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -125,22 +124,23 @@ func TestCompositionAdmissionAndLateGraphFailure(t *testing.T) {
 				last = last.GetBinaryExpr().Right
 			}
 			last.GetBinaryExpr().Right = tc.replacement
-			admitted, err := translator.Admit(ctx, changed)
-			require.Nil(t, admitted)
-			assertFailure(t, err, tc.kind, translation.StageAdmission)
+			imported, err := translator.Import(ctx, changed)
+			require.Nil(t, imported)
+			assertFailure(t, err, tc.kind, translation.StageImport)
 		})
 	}
-	// Unsupported and malformed siblings remain distinct even after native routes were admitted.
+	// Stop at unsupported coverage, even when a later sibling is malformed.
 	changed := proto.Clone(source).(*planpb.Expr)
 	last := changed
 	for last.GetBinaryExpr().Right.GetBinaryExpr() != nil {
 		last = last.GetBinaryExpr().Right
 	}
 	last.GetBinaryExpr().Right = binarySource(planpb.BinaryExpr_LogicalOr, &planpb.Expr{Expr: &planpb.Expr_CallExpr{CallExpr: &planpb.CallExpr{}}}, &planpb.Expr{})
-	_, err := translator.Admit(ctx, changed)
-	assertFailure(t, err, translation.UnsafeSource, translation.StageAdmission)
-	_, imported := importSource(t, translator, source)
-	_, foreign := importSource(t, translator, source)
+	partial, err := translator.Import(ctx, changed)
+	require.Nil(t, partial)
+	assertFailure(t, err, translation.UnsupportedExpression, translation.StageImport)
+	imported := importSource(t, translator, source)
+	foreign := importSource(t, translator, source)
 	foreignLeaf := foreign.Root()
 	for foreignLeaf.ChildCount() == 2 {
 		foreignLeaf = foreignLeaf.ChildAt(1)
@@ -153,15 +153,16 @@ func TestCompositionAdmissionAndLateGraphFailure(t *testing.T) {
 	require.NoError(t, err)
 	wrongType, err := expressions.NewOpaqueExpression(originalLeaf.(*expressions.OpaqueExpression).ID(), runtime.Types().BoolMayNull, "changed")
 	require.NoError(t, err)
-	for _, leaf := range []expressions.Expression{foreignLeaf, wrongType, imported.Root().ChildAt(0).ChildAt(0)} {
+	for _, leaf := range []expressions.Expression{foreignLeaf, wrongType} {
 		bad := replaceLastGraph(t, imported.Root(), leaf)
 		output, err := translator.Export(ctx, imported, bad)
 		require.Nil(t, output)
-		assertFailure(t, err, translation.TranslationDefect, translation.StageExport)
+		if leaf == wrongType {
+			assertFailure(t, err, translation.UnsupportedExpression, translation.StageExport)
+		} else {
+			assertFailure(t, err, translation.TranslationDefect, translation.StageExport)
+		}
 	}
-	candidate := proto.Clone(source).(*planpb.Expr)
-	compositionParts(candidate)[5].GetNullExpr().Op = planpb.NullExpr_IsNotNull
-	assertFailure(t, translator.ValidateCandidate(ctx, imported, candidate), translation.TranslationDefect, translation.StageCandidateValidation)
 }
 
 // Visits participating protobuf messages, including embedded operands and repeated candidates.
@@ -184,7 +185,6 @@ func visitMessages(message protoreflect.Message, visit func(protoreflect.Message
 
 func TestCompositionUnknownFields(t *testing.T) {
 	translator, source := compositionFixture(t)
-	_, imported := importSource(t, translator, source)
 	// One occurrence of every participating message type is enough to exercise its coverage gate.
 	seen := map[protoreflect.FullName]bool{}
 	var names []protoreflect.FullName
@@ -205,10 +205,9 @@ func TestCompositionUnknownFields(t *testing.T) {
 					changed = true
 				}
 			})
-			admitted, err := translator.Admit(context.Background(), mutated)
-			require.Nil(t, admitted)
-			assertFailure(t, err, translation.UnsupportedSource, translation.StageAdmission)
-			assertFailure(t, translator.ValidateCandidate(context.Background(), imported, mutated), translation.TranslationDefect, translation.StageCandidateValidation)
+			imported, err := translator.Import(context.Background(), mutated)
+			require.Nil(t, imported)
+			assertFailure(t, err, translation.UnsupportedExpression, translation.StageImport)
 		})
 	}
 }

@@ -10,17 +10,18 @@ import (
 
 	adapterexpressions "github.com/milvus-io/milvus/internal/parser/planparserv2/predicateadapter/expressions"
 	"github.com/milvus-io/milvus/internal/parser/planparserv2/predicateadapter/utils"
+	"github.com/milvus-io/milvus/pkg/v3/proto/planpb"
 	"github.com/milvus-io/milvus/pkg/v3/util/merr"
 )
 
-// Immutable association with a source position; protobuf ownership stays in the occurrence table.
+// Immutable association between a graph identity and a borrowed source region.
 type OpaqueBinding struct {
 	// Canonical identity carried by the optimizer graph.
 	id *adapterexpressions.OpaqueID
 	// Established full result Type, shared read-only.
 	typ types.Type
-	// Source position owned by the same import attempt.
-	occurrence int
+	// Borrowed source region, immutable throughout the import/export attempt.
+	source *planpb.Expr
 }
 
 // Sequential registration followed by read-only lookup within one import attempt.
@@ -33,7 +34,7 @@ type OpaqueRegistry struct {
 	bindings []OpaqueBinding
 }
 
-// Reserves one preservation scope; admission must finish before this is called.
+// Reserves one preservation scope for an import attempt.
 func NewOpaqueRegistry() (*OpaqueRegistry, error) {
 	scope, ok := utils.NextSessionToken()
 	if !ok {
@@ -42,18 +43,18 @@ func NewOpaqueRegistry() (*OpaqueRegistry, error) {
 	return &OpaqueRegistry{scope: scope, prefix: "mvopaque:v1:" + strconv.FormatUint(uint64(scope), 10) + ":"}, nil
 }
 
-// Appends an admitted region; the importer supplies its reserved occurrence index and immutable Type.
-func (r *OpaqueRegistry) Register(occurrence int, typ types.Type) (OpaqueBinding, error) {
-	if occurrence < 0 || typ == nil {
-		return OpaqueBinding{}, merr.WrapErrServiceInternalMsg("predicateadapter: missing opaque occurrence or Type")
+// Registers a borrowed region and its established immutable result Type.
+func (r *OpaqueRegistry) Register(source *planpb.Expr, typ types.Type) (OpaqueBinding, error) {
+	if source == nil || typ == nil {
+		return OpaqueBinding{}, merr.WrapErrServiceInternalMsg("predicateadapter: missing opaque source or Type")
 	}
-	binding := OpaqueBinding{id: adapterexpressions.NewOpaqueID(uint64(r.scope), uint64(len(r.bindings))), typ: typ, occurrence: occurrence}
+	binding := OpaqueBinding{id: adapterexpressions.NewOpaqueID(uint64(r.scope), uint64(len(r.bindings))), typ: typ, source: source}
 	r.bindings = append(r.bindings, binding)
 	return binding, nil
 }
 
-// Resolves only registered canonical keys with the expected full Type and source occurrence.
-func (r *OpaqueRegistry) Resolve(id expressioninterfaces.OpaqueID, typ types.Type, occurrence int) (OpaqueBinding, error) {
+// Resolves only registered canonical keys with the expected full Type.
+func (r *OpaqueRegistry) Resolve(id expressioninterfaces.OpaqueID, typ types.Type) (OpaqueBinding, error) {
 	if id == nil || typ == nil {
 		return OpaqueBinding{}, merr.WrapErrServiceInternalMsg("predicateadapter: missing opaque identity or Type")
 	}
@@ -74,8 +75,8 @@ func (r *OpaqueRegistry) Resolve(id expressioninterfaces.OpaqueID, typ types.Typ
 	if binding.id.Key() != key {
 		return OpaqueBinding{}, merr.WrapErrServiceInternalMsg("predicateadapter: noncanonical opaque identity")
 	}
-	if !binding.typ.EqualsTo(typ) || binding.occurrence != occurrence {
-		return OpaqueBinding{}, merr.WrapErrServiceInternalMsg("predicateadapter: opaque Type or occurrence disagrees with registration")
+	if !binding.typ.EqualsTo(typ) {
+		return OpaqueBinding{}, merr.WrapErrServiceInternalMsg("predicateadapter: opaque Type disagrees with registration")
 	}
 	return binding, nil
 }
@@ -86,5 +87,5 @@ func (b OpaqueBinding) ID() *adapterexpressions.OpaqueID { return b.id }
 // Shared immutable result descriptor.
 func (b OpaqueBinding) Type() types.Type { return b.typ }
 
-// Source position supplied during registration.
-func (b OpaqueBinding) Occurrence() int { return b.occurrence }
+// Borrowed preserved region, which callers must keep read-only.
+func (b OpaqueBinding) Source() *planpb.Expr { return b.source }

@@ -4,42 +4,54 @@ import (
 	"context"
 
 	"github.com/lie-yan/predicate-optimization/expressions"
+	"github.com/lie-yan/predicate-optimization/foundation"
+	valueinterfaces "github.com/lie-yan/predicate-optimization/values/interfaces"
 
-	"github.com/milvus-io/milvus/internal/parser/planparserv2/predicateadapter/internal/assertions"
 	"github.com/milvus-io/milvus/pkg/v3/proto/planpb"
+	"github.com/milvus-io/milvus/pkg/v3/util/merr"
 )
 
-// Per-export reconstruction state with no ownership of borrowed source metadata.
+// Per-export state; borrowed bindings remain immutable.
 type exporter struct {
-	// Request context for this invocation.
+	// Cancellation for this invocation.
 	ctx context.Context
-	// Immutable graph/source and preservation associations.
+	// Immutable field and opaque bindings owned by this attempt.
 	imported *ImportResult
 }
 
-// Dispatches actual checked graph nodes to their paired reconstruction handlers.
-func (v *exporter) exportExpr(id occurrenceID, graph expressions.Expression) (*planpb.Expr, error) {
+// Dispatches the actual graph without consulting source occurrences.
+func (v *exporter) exportExpr(graph expressions.Expression) (*planpb.Expr, error) {
 	if err := v.ctx.Err(); err != nil {
 		return nil, err
 	}
-	if v.imported.occurrences[id].IsBinaryRange() {
-		return v.exportBinaryRange(id, graph)
-	}
-	if v.imported.occurrences[id].IsTerm() {
-		return v.exportTerm(id, graph)
+	if graph == nil {
+		return nil, translationDefect(StageExport, "missing expression")
 	}
 	switch node := graph.(type) {
-	case *expressions.LiteralExpression, *expressions.LogicalExpression:
-		return v.exportLogical(id, node)
-	case *expressions.CallExpression:
-		if v.imported.occurrences[id].IsFieldComparison() {
-			return v.exportCompare(id, node)
-		}
-		assertions.True(v.imported.occurrences[id].IsUnaryComparison())
-		return v.exportUnaryRange(id, node)
 	case *expressions.OpaqueExpression:
-		return v.exportOpaque(id, node)
+		return v.exportOpaque(node)
+	case *expressions.LiteralExpression:
+		value, ok := node.Value().(valueinterfaces.BoolValue)
+		if !ok || node.Type().Nullability() != foundation.NonNull || value.IsNull() {
+			return nil, unsupportedExport("expected nonnull Boolean predicate")
+		}
+		result := &planpb.Expr{Expr: &planpb.Expr_AlwaysTrueExpr{AlwaysTrueExpr: &planpb.AlwaysTrueExpr{}}}
+		if !value.Bool() {
+			result = &planpb.Expr{Expr: &planpb.Expr_UnaryExpr{UnaryExpr: &planpb.UnaryExpr{Op: planpb.UnaryExpr_Not, Child: result}}}
+		}
+		return result, nil
+	case *expressions.LogicalExpression:
+		return v.exportLogical(node)
+	case *expressions.CallExpression:
+		return v.exportComparison(node)
+	case *expressions.SpecialFormExpression:
+		return v.exportTerm(node)
 	default:
-		return nil, translationDefect(StageExport, "graph has no paired export route")
+		return nil, unsupportedExport("unrepresentable predicate expression")
 	}
+}
+
+// Reports a valid graph outside executable export coverage, without a partial candidate.
+func unsupportedExport(message string) error {
+	return newFailure(UnsupportedExpression, StageExport, merr.Wrap(merr.ErrServiceUnimplemented, "predicate translation: "+message))
 }

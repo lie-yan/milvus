@@ -16,7 +16,7 @@ import (
 )
 
 // Immutable optimizer identity/Type associated with borrowed read-only Milvus metadata.
-// Bindings are returned by value; occurrence-specific reconstruction metadata belongs to the translator.
+// Bindings are returned by value; native export copies canonical column metadata.
 type FieldBinding struct {
 	// Session-scoped Milvus field identity.
 	id *adapterexpressions.ColumnID
@@ -24,6 +24,8 @@ type FieldBinding struct {
 	typ types.Type
 	// Borrowed schema field validated by the pinned view.
 	field *schemapb.FieldSchema
+	// Canonical top-level metadata created once at registration.
+	column *planpb.ColumnInfo
 }
 
 // Session-local bindings for sequential import and read-only export lookup.
@@ -81,6 +83,12 @@ func (r *FieldRegistry) BindColumn(info *planpb.ColumnInfo, typ types.Type) (Fie
 	binding := FieldBinding{
 		id:  adapterexpressions.NewColumnID(uint64(r.token), field.GetFieldID()),
 		typ: typ, field: field,
+		column: &planpb.ColumnInfo{
+			FieldId: field.GetFieldID(), DataType: field.GetDataType(),
+			IsPrimaryKey: field.GetIsPrimaryKey(), IsAutoID: field.GetAutoID(),
+			IsPartitionKey: field.GetIsPartitionKey(), IsClusteringKey: field.GetIsClusteringKey(),
+			Nullable: field.GetNullable(), ElementType: field.GetElementType(),
+		},
 	}
 	r.fields[field.GetFieldID()] = binding
 	return binding, true, nil
@@ -119,3 +127,14 @@ func (b FieldBinding) Type() types.Type { return b.typ }
 
 // Returns the borrowed schema field, which callers must keep read-only.
 func (b FieldBinding) Field() *schemapb.FieldSchema { return b.field }
+
+// Creates independently owned output metadata without copying protobuf runtime state.
+func (b FieldBinding) NewColumnInfo() *planpb.ColumnInfo {
+	c := b.column
+	return &planpb.ColumnInfo{
+		FieldId: c.FieldId, DataType: c.DataType,
+		IsPrimaryKey: c.IsPrimaryKey, IsAutoID: c.IsAutoID,
+		IsPartitionKey: c.IsPartitionKey, IsClusteringKey: c.IsClusteringKey,
+		Nullable: c.Nullable, ElementType: c.ElementType,
+	}
+}

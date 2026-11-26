@@ -117,3 +117,49 @@ func TestNamedLookupPreservesBindingDefect(t *testing.T) {
 	require.ErrorIs(t, err, shared.ErrContractViolation)
 	require.Nil(t, handle)
 }
+
+func TestIndexedLookupStructuralTypesAndFallback(t *testing.T) {
+	name := FunctionName{Namespace: "test.scalar", Name: "indexed"}
+	integer, err := types.NewIntType(types.Int64, foundation.NonNull)
+	require.NoError(t, err)
+	nullable, err := integer.WithNullability(foundation.MayNull)
+	require.NoError(t, err)
+	array, err := types.NewArrayType(integer, foundation.NonNull)
+	require.NoError(t, err)
+	bound := uint64(32)
+	varchar, err := types.NewVarCharType(&bound, foundation.NonNull)
+	require.NoError(t, err)
+	unbounded, err := types.NewVarCharType(nil, foundation.NonNull)
+	require.NoError(t, err)
+	definitions := []FunctionDefinition{
+		overload(t, name, []types.Type{integer}, integer, shared.PropagateNull),
+		overload(t, name, []types.Type{varchar}, integer, shared.PropagateNull),
+		overload(t, name, []types.Type{unbounded}, integer, shared.PropagateNull),
+	}
+	scalar := catalogWith(t, definitions...)
+	// Separate instances and outer nullability must select the same structural overload.
+	sameVarchar, err := types.NewVarCharType(&bound, foundation.MayNull)
+	require.NoError(t, err)
+	for i, args := range [][]types.Type{{nullable}, {sameVarchar}, {unbounded}} {
+		handle, err := scalar.LookupFunction(name, args)
+		require.NoError(t, err)
+		require.True(t, handle.EqualsTo(scalar.handleAt(i)))
+	}
+	bound++
+	other, err := types.NewVarCharType(&bound, foundation.NonNull)
+	require.NoError(t, err)
+	_, err = scalar.LookupFunction(name, []types.Type{other})
+	require.ErrorIs(t, err, shared.ErrUnsupportedLookup)
+	// A mixed overload set must preserve composite and higher-arity binding.
+	definitions = append(definitions, overload(t, name, []types.Type{array}, integer, shared.PropagateNull), overload(t, name, []types.Type{integer, integer, integer}, integer, shared.PropagateNull))
+	mixed := catalogWith(t, definitions...)
+	for i, args := range [][]types.Type{{nullable}, {sameVarchar}, {unbounded}, {array}, {integer, nullable, integer}} {
+		handle, err := mixed.LookupFunction(name, args)
+		require.NoError(t, err)
+		require.True(t, handle.EqualsTo(mixed.handleAt(i)))
+	}
+	nullableElementArray, err := types.NewArrayType(nullable, foundation.NonNull)
+	require.NoError(t, err)
+	_, err = mixed.LookupFunction(name, []types.Type{nullableElementArray})
+	require.ErrorIs(t, err, shared.ErrUnsupportedLookup)
+}
