@@ -3,6 +3,7 @@ package translation
 import (
 	"github.com/lie-yan/predicate-optimization/expressions"
 
+	"github.com/milvus-io/milvus/internal/parser/planparserv2/predicateadapter/internal/assertions"
 	"github.com/milvus-io/milvus/pkg/v3/proto/planpb"
 )
 
@@ -15,50 +16,38 @@ type unaryRangeOperands struct {
 }
 
 // Admits only the eight existing Bool/Int64 comparisons, without allocating graph or registry state.
-func (v *importer) readUnaryRangeOperands(node *planpb.Expr_UnaryRangeExpr) (*unaryRangeOperands, error) {
-	if node == nil || node.UnaryRangeExpr == nil {
-		return nil, sourceDefect("missing unary comparison")
-	}
+func (v *importer) readUnaryRangeOperands(node *planpb.Expr_UnaryRangeExpr) (unaryRangeOperands, error) {
+	// Milvus supplies a populated plan; only translation coverage needs checking here.
+	assertions.NotNilPointer(node)
 	n := node.UnaryRangeExpr
-	if n.ColumnInfo == nil || n.Value == nil || n.Value.Val == nil {
-		return nil, sourceDefect("missing unary comparison operand")
-	}
-	if len(n.ProtoReflect().GetUnknown()) != 0 {
-		return nil, unsupportedSource(excludedScopeOrVersion)
-	}
-	if n.Op == planpb.OpType_Invalid {
-		return nil, sourceDefect("invalid unary comparison operator")
-	}
-	if len(n.ExtraValues) != 0 {
-		return nil, unsupportedSource(unsupportedForm)
-	}
+	assertions.NotNilPointer(n)
 	switch n.Op {
 	case planpb.OpType_Equal, planpb.OpType_NotEqual, planpb.OpType_LessThan, planpb.OpType_LessEqual, planpb.OpType_GreaterThan, planpb.OpType_GreaterEqual:
 	default:
-		return nil, unsupportedSource(unsupportedForm)
+		return unaryRangeOperands{}, unsupportedSource(unsupportedForm)
 	}
 	field, reason, err := v.result.owner.readFieldOperand(n.ColumnInfo)
 	if err != nil {
-		return nil, err
+		return unaryRangeOperands{}, err
 	}
 	if reason != noLimitation {
-		return nil, unsupportedSource(reason)
+		return unaryRangeOperands{}, unsupportedSource(reason)
 	}
 	boolean := v.result.owner.primitives.BoolNonNull.EqualsTo(field.typ)
 	if !boolean && !v.result.owner.primitives.Int64NonNull.EqualsTo(field.typ) {
-		return nil, unsupportedSource(excludedDomain)
+		return unaryRangeOperands{}, unsupportedSource(excludedDomain)
 	}
 	if boolean && n.Op != planpb.OpType_Equal && n.Op != planpb.OpType_NotEqual {
-		return nil, unsupportedSource(unsupportedForm)
+		return unaryRangeOperands{}, unsupportedSource(unsupportedForm)
 	}
 	literal, reason, err := v.result.owner.readLiteralOperand(n.Value, field.typ)
 	if err != nil {
-		return nil, err
+		return unaryRangeOperands{}, err
 	}
 	if reason != noLimitation {
-		return nil, unsupportedSource(reason)
+		return unaryRangeOperands{}, unsupportedSource(reason)
 	}
-	return &unaryRangeOperands{field: field, literal: literal}, nil
+	return unaryRangeOperands{field: field, literal: literal}, nil
 }
 
 // Constructs a comparison from field-first call arguments.

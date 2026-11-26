@@ -26,12 +26,13 @@ func TestFunctionHandleIdentityAndMetadata(t *testing.T) {
 	add := registration(t, "add", foundation.Add, "", shared.PropagateNull)
 	catalog := catalogWith(t, less, add)
 	first, second := catalog.handleAt(0), catalog.handleAt(0)
-	require.NotSame(t, first, second)
+	require.Same(t, first, second)
 	require.True(t, first.EqualsTo(second))
 	require.False(t, first.EqualsTo(catalog.handleAt(1)))
 	metadata, err := catalog.Metadata(second)
 	require.NoError(t, err)
 	require.Same(t, less.Metadata, metadata)
+	require.Same(t, metadata.Signature(), first.Signature())
 }
 
 func TestFunctionHandleOwnershipAndFailures(t *testing.T) {

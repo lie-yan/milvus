@@ -9,6 +9,9 @@ import (
 
 // Copies only the registered region selected by the actual opaque ID and Type.
 func (v *exporter) exportOpaque(graph *expressions.OpaqueExpression) (*planpb.Expr, error) {
+	if v.imported.opaques == nil {
+		return nil, translationDefect(StageExport, "opaque expression has no preservation registry")
+	}
 	binding, err := v.imported.opaques.Resolve(graph.ID(), graph.Type())
 	if err != nil {
 		return nil, newFailure(TranslationDefect, StageExport, err)

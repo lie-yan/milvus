@@ -3,7 +3,6 @@ package functions
 import (
 	shared "github.com/lie-yan/predicate-optimization/functions"
 	functioninterfaces "github.com/lie-yan/predicate-optimization/functions/interfaces"
-	"github.com/lie-yan/predicate-optimization/types"
 
 	"github.com/milvus-io/milvus/internal/parser/planparserv2/predicateadapter/internal/assertions"
 )
@@ -18,9 +17,9 @@ type functionHandle struct {
 
 var _ functioninterfaces.FunctionHandle = (*functionHandle)(nil)
 
-// Creates a handle for a canonical entry selected by resolution.
+// Returns the shared immutable handle for a canonical entry selected by resolution.
 func (c *FunctionCatalog) handleAt(index int) *functionHandle {
-	h := &functionHandle{catalog: c, index: index}
+	h := &c.entries[index].handle
 	h.assertValid()
 	return h
 }
@@ -37,10 +36,10 @@ func (h *functionHandle) Name() string {
 	return h.catalog.entries[h.index].name.Name
 }
 
-// Copies the parameter slice while sharing immutable implementation Types.
-func (h *functionHandle) ArgumentTypes() []types.Type {
+// Shares the catalog's immutable implementation signature.
+func (h *functionHandle) Signature() *shared.FunctionSignature {
 	h.assertValid()
-	return h.catalog.entries[h.index].metadata.Signature().ArgumentTypes()
+	return h.catalog.entries[h.index].metadata.Signature()
 }
 
 // Compares snapshot and canonical entry identity, not wrapper addresses or names.

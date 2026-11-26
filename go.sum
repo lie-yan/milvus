@@ -730,6 +730,12 @@ github.com/lestrrat/go-file-rotatelogs v0.0.0-20180223000712-d3151e2a480f/go.mod
 github.com/lestrrat/go-strftime v0.0.0-20180220042222-ba3bf9c1d042/go.mod h1:TPpsiPUEh0zFL1Snz4crhMlBe60PYxRHr5oFF3rRYg0=
 github.com/lie-yan/predicate-optimization v0.0.0-20261124004308-1163e63e74df h1:TquzVYcLRQqX2UMcJqxlLU0HUsHjuF9s/2WyVbljwUo=
 github.com/lie-yan/predicate-optimization v0.0.0-20261124004308-1163e63e74df/go.mod h1:BumI/xoWVHkL42ZnCSUtTbXFbmC+p30ZBsxnqyr6OOk=
+github.com/lie-yan/predicate-optimization v0.0.0-20261126100825-cbdd298d3060 h1:AvAbdA6tUUzr6LFH58FPjUWLKn65MD8TVV9ZE91iTtE=
+github.com/lie-yan/predicate-optimization v0.0.0-20261126100825-cbdd298d3060/go.mod h1:BumI/xoWVHkL42ZnCSUtTbXFbmC+p30ZBsxnqyr6OOk=
+github.com/lie-yan/predicate-optimization v0.0.0-20261126124156-0cca45743f43 h1:zuDjHMsUc0k+xGCLLO11XRdlypVsXHI3gKyDR8tdmf8=
+github.com/lie-yan/predicate-optimization v0.0.0-20261126124156-0cca45743f43/go.mod h1:BumI/xoWVHkL42ZnCSUtTbXFbmC+p30ZBsxnqyr6OOk=
+github.com/lie-yan/predicate-optimization v0.0.0-20261126130815-2361445edc32 h1:gYgpg1NibUyg4XpILZYuC+0Oo11urMSZmgnn+Mf0zmc=
+github.com/lie-yan/predicate-optimization v0.0.0-20261126130815-2361445edc32/go.mod h1:BumI/xoWVHkL42ZnCSUtTbXFbmC+p30ZBsxnqyr6OOk=
 github.com/linkedin/goavro v2.1.0+incompatible/go.mod h1:bBCwI2eGYpUI/4820s67MElg9tdeLbINjLjiM2xZFYM=
 github.com/linkedin/goavro/v2 v2.10.0/go.mod h1:UgQUb2N/pmueQYH9bfqFioWxzYCZXSfF8Jw03O5sjqA=
 github.com/linkedin/goavro/v2 v2.10.1/go.mod h1:UgQUb2N/pmueQYH9bfqFioWxzYCZXSfF8Jw03O5sjqA=

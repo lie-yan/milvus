@@ -5,6 +5,7 @@ import (
 
 	"github.com/milvus-io/milvus-proto/go-api/v3/schemapb"
 	"github.com/milvus-io/milvus/internal/parser/planparserv2/predicateadapter/schema"
+	translationutils "github.com/milvus-io/milvus/internal/parser/planparserv2/predicateadapter/translation/utils"
 	"github.com/milvus-io/milvus/pkg/v3/proto/planpb"
 	"github.com/milvus-io/milvus/pkg/v3/util/merr"
 )
@@ -48,6 +49,13 @@ func (v *importer) importOpaque(source *planpb.Expr, node *planpb.Expr_NullExpr)
 	}
 	if reason != noLimitation {
 		return nil, unsupportedSource(reason)
+	}
+	if v.result.opaques == nil {
+		registry, err := translationutils.NewOpaqueRegistry()
+		if err != nil {
+			return nil, newFailure(TranslationDefect, StageImport, err)
+		}
+		v.result.opaques = registry
 	}
 	binding, err := v.result.opaques.Register(source, v.result.owner.primitives.BoolNonNull)
 	if err != nil {

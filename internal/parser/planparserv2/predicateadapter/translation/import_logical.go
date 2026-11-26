@@ -19,12 +19,12 @@ const (
 )
 
 // Checks the local native shape without visiting children or selecting fallback.
-func logicalShape(source *planpb.Expr) (logicalKind, []*planpb.Expr, limitation, error) {
+func logicalShape(source *planpb.Expr) (logicalKind, [2]*planpb.Expr, limitation, error) {
 	if source == nil {
-		return 0, nil, noLimitation, merr.WrapErrServiceInternalMsg("predicate translation: missing logical source")
+		return 0, [2]*planpb.Expr{}, noLimitation, merr.WrapErrServiceInternalMsg("predicate translation: missing logical source")
 	}
 	if len(source.ProtoReflect().GetUnknown()) != 0 {
-		return 0, nil, excludedScopeOrVersion, nil
+		return 0, [2]*planpb.Expr{}, excludedScopeOrVersion, nil
 	}
 	switch node := source.Expr.(type) {
 	case *planpb.Expr_AlwaysTrueExpr:
@@ -32,44 +32,44 @@ func logicalShape(source *planpb.Expr) (logicalKind, []*planpb.Expr, limitation,
 			break
 		}
 		if len(node.AlwaysTrueExpr.ProtoReflect().GetUnknown()) != 0 {
-			return 0, nil, excludedScopeOrVersion, nil
+			return 0, [2]*planpb.Expr{}, excludedScopeOrVersion, nil
 		}
-		return trueKind, nil, noLimitation, nil
+		return trueKind, [2]*planpb.Expr{}, noLimitation, nil
 	case *planpb.Expr_UnaryExpr:
 		if node == nil || node.UnaryExpr == nil || node.UnaryExpr.Child == nil {
 			break
 		}
 		n := node.UnaryExpr
 		if len(n.ProtoReflect().GetUnknown()) != 0 {
-			return 0, nil, excludedScopeOrVersion, nil
+			return 0, [2]*planpb.Expr{}, excludedScopeOrVersion, nil
 		}
 		if n.Op == planpb.UnaryExpr_Invalid {
 			break
 		}
 		if n.Op != planpb.UnaryExpr_Not {
-			return 0, nil, unsupportedForm, nil
+			return 0, [2]*planpb.Expr{}, unsupportedForm, nil
 		}
-		return notKind, []*planpb.Expr{n.Child}, noLimitation, nil
+		return notKind, [2]*planpb.Expr{n.Child}, noLimitation, nil
 	case *planpb.Expr_BinaryExpr:
 		if node == nil || node.BinaryExpr == nil || node.BinaryExpr.Left == nil || node.BinaryExpr.Right == nil {
 			break
 		}
 		n := node.BinaryExpr
 		if len(n.ProtoReflect().GetUnknown()) != 0 {
-			return 0, nil, excludedScopeOrVersion, nil
+			return 0, [2]*planpb.Expr{}, excludedScopeOrVersion, nil
 		}
 		switch n.Op {
 		case planpb.BinaryExpr_LogicalAnd:
-			return andKind, []*planpb.Expr{n.Left, n.Right}, noLimitation, nil
+			return andKind, [2]*planpb.Expr{n.Left, n.Right}, noLimitation, nil
 		case planpb.BinaryExpr_LogicalOr:
-			return orKind, []*planpb.Expr{n.Left, n.Right}, noLimitation, nil
+			return orKind, [2]*planpb.Expr{n.Left, n.Right}, noLimitation, nil
 		case planpb.BinaryExpr_Invalid:
 			break
 		default:
-			return 0, nil, unsupportedForm, nil
+			return 0, [2]*planpb.Expr{}, unsupportedForm, nil
 		}
 	}
-	return 0, nil, noLimitation, merr.WrapErrServiceInternalMsg("predicate translation: malformed native Boolean expression")
+	return 0, [2]*planpb.Expr{}, noLimitation, merr.WrapErrServiceInternalMsg("predicate translation: malformed native Boolean expression")
 }
 
 // Maps native logical forms; TRUE is constructed as a literal.
@@ -95,8 +95,15 @@ func (v *importer) importLogical(source *planpb.Expr) (expressions.Expression, e
 	if reason != noLimitation {
 		return nil, unsupportedSource(reason)
 	}
-	graphs := make([]expressions.Expression, 0, len(sources))
-	for _, child := range sources {
+	count := 2
+	if kind == trueKind {
+		count = 0
+	} else if kind == notKind {
+		count = 1
+	}
+	var children [2]expressions.Expression
+	graphs := children[:count]
+	for i, child := range sources[:count] {
 		childGraph, err := v.importExpr(child)
 		if err != nil {
 			return nil, err
@@ -104,7 +111,7 @@ func (v *importer) importLogical(source *planpb.Expr) (expressions.Expression, e
 		if !v.result.owner.primitives.BoolNonNull.EqualsTo(childGraph.Type()) {
 			return nil, unsupportedSource(excludedDomain)
 		}
-		graphs = append(graphs, childGraph)
+		graphs[i] = childGraph
 	}
 	var graph expressions.Expression
 	if kind == trueKind {

@@ -103,7 +103,7 @@ func TestFieldOperandRoundTripAndRole(t *testing.T) {
 	require.NoError(t, err)
 	foreignGraph, err := importField(foreign, operands[0])
 	require.NoError(t, err)
-	changedType, err := expressions.NewReferenceExpression(graph.ID(), translator.primitives.Int64MayNull, "")
+	changedType, err := expressions.NewReferenceExpression(graph.ID(), nullableIntegerType(t), "")
 	require.NoError(t, err)
 	for _, changed := range []expressions.Expression{foreignGraph, changedType} {
 		output, err := exportField(registry, changed)
@@ -149,7 +149,7 @@ func TestOperandImportCoverageCoverageAndDefects(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, excludedScopeOrVersion, reason)
 	plain := &planpb.GenericValue{Val: &planpb.GenericValue_Int64Val{Int64Val: 1}}
-	for _, typ := range []types.Type{translator.primitives.Int64MayNull} {
+	for _, typ := range []types.Type{nullableIntegerType(t)} {
 		_, reason, err := translator.readLiteralOperand(plain, typ)
 		require.NoError(t, err)
 		require.Equal(t, excludedDomain, reason)
@@ -222,9 +222,9 @@ func TestLiteralOperandExactRoundTrip(t *testing.T) {
 
 func TestScalarExportRejectsNullableValues(t *testing.T) {
 	translator, _, _ := operandFixture(t)
-	nullable, err := translator.factory.NewInteger(translator.primitives.Int64MayNull, 7)
+	nullable, err := translator.factory.NewInteger(nullableIntegerType(t), 7)
 	require.NoError(t, err)
-	null, err := translator.factory.NewNull(translator.primitives.Int64MayNull)
+	null, err := translator.factory.NewNull(nullableIntegerType(t))
 	require.NoError(t, err)
 	for _, value := range []valueinterfaces.Value{nullable, null} {
 		graph, err := expressions.NewLiteralExpression(value)
@@ -402,4 +402,11 @@ func TestExtendedLiteralCorrespondence(t *testing.T) {
 		_, _, err := translator.readLiteralOperand(tc.value, tc.typ)
 		requireOperandFailure(t, err, UnsafeSource, StageImport)
 	}
+}
+
+func nullableIntegerType(t *testing.T) *types.IntType {
+	t.Helper()
+	rt, err := adapterruntime.SharedRuntime()
+	require.NoError(t, err)
+	return rt.Types().Int64MayNull
 }

@@ -149,11 +149,7 @@ func importField(registry *schema.FieldRegistry, operand fieldOperand) (*express
 	if !supported {
 		return nil, translationDefect(StageImport, "admitted field no longer bindable")
 	}
-	graph, err := expressions.NewReferenceExpression(binding.ColumnID(), binding.Type(), binding.Field().GetName())
-	if err != nil {
-		return nil, newFailure(TranslationDefect, StageImport, err)
-	}
-	return graph, nil
+	return binding.Reference(), nil
 }
 
 // Copies exact scalar payloads through the selected factory without coercion or evaluation.

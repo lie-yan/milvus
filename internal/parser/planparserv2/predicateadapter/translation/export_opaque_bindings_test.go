@@ -50,3 +50,21 @@ func TestOpaqueSourceBindings(t *testing.T) {
 		require.Equal(t, int64(101), source.GetNullExpr().ColumnInfo.FieldId)
 	}
 }
+
+func TestImportWithoutOpaqueRegistry(t *testing.T) {
+	translator, _, columns := operandFixture(t)
+	source := &planpb.Expr{Expr: &planpb.Expr_AlwaysTrueExpr{AlwaysTrueExpr: &planpb.AlwaysTrueExpr{}}}
+	imported, err := translator.Import(t.Context(), source)
+	require.NoError(t, err)
+	require.Nil(t, imported.opaques)
+	output, err := translator.Export(t.Context(), imported, imported.Root())
+	require.NoError(t, err)
+	require.NotNil(t, output.GetAlwaysTrueExpr())
+	opaqueSource := &planpb.Expr{Expr: &planpb.Expr_NullExpr{NullExpr: &planpb.NullExpr{ColumnInfo: columns[3], Op: planpb.NullExpr_IsNull}}}
+	opaque, err := translator.Import(t.Context(), opaqueSource)
+	require.NoError(t, err)
+	require.NotNil(t, opaque.opaques)
+	output, err = translator.Export(t.Context(), imported, opaque.Root())
+	require.Nil(t, output)
+	requireOperandFailure(t, err, TranslationDefect, StageExport)
+}

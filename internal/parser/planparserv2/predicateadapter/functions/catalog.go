@@ -37,6 +37,8 @@ type FunctionCatalog struct {
 
 // Canonical semantic record shared within one snapshot.
 type functionEntry struct {
+	// Stable implementation identity initialized before catalog publication.
+	handle functionHandle
 	// Qualified declaration identity.
 	name FunctionName
 	// Immutable implementation semantics; the first diagnostic label wins.
@@ -94,6 +96,7 @@ func (b *FunctionCatalogBuilder) Build() (*FunctionCatalog, error) {
 		byOperator: make(map[foundation.OperatorType]*overloadSet),
 	}
 	for i, entry := range catalog.entries {
+		entry.handle = functionHandle{catalog: catalog, index: i}
 		args := entry.metadata.Signature().ArgumentTypes()
 		addOverload(catalog.byName, entry.name, i, args)
 		if name, present := entry.metadata.BuiltInName().Get(); present {

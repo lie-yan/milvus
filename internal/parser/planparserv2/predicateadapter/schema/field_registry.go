@@ -4,6 +4,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/lie-yan/predicate-optimization/expressions"
 	expressioninterfaces "github.com/lie-yan/predicate-optimization/expressions/interfaces"
 	"github.com/lie-yan/predicate-optimization/foundation"
 	"github.com/lie-yan/predicate-optimization/types"
@@ -16,16 +17,14 @@ import (
 )
 
 // Immutable optimizer identity/Type associated with borrowed read-only Milvus metadata.
-// Bindings are returned by value; native export copies canonical column metadata.
+// Bindings are returned by value; native export builds independent column metadata.
 type FieldBinding struct {
 	// Session-scoped Milvus field identity.
 	id *adapterexpressions.ColumnID
-	// Full immutable Type derived by the translator.
-	typ types.Type
+	// Shared immutable reference, including the full Type and schema name.
+	reference *expressions.ReferenceExpression
 	// Borrowed schema field validated by the pinned view.
 	field *schemapb.FieldSchema
-	// Canonical top-level metadata created once at registration.
-	column *planpb.ColumnInfo
 }
 
 // Session-local bindings for sequential import and read-only export lookup.
@@ -35,10 +34,8 @@ type FieldRegistry struct {
 	view *View
 	// Process-unique session identity.
 	token utils.SessionToken
-	// Canonical document-field key prefix for this session.
-	prefix string
-	// Registered bindings indexed by original Milvus field ID.
-	fields map[int64]FieldBinding
+	// Compact bindings in registration order; typical queries reference few fields.
+	fields []FieldBinding
 }
 
 // Creates an empty registry with a fresh session identity and the supplied pinned view.
@@ -52,8 +49,6 @@ func NewFieldRegistry(view *View) (*FieldRegistry, error) {
 	}
 	return &FieldRegistry{
 		view: view, token: token,
-		prefix: "mvcol:v1:" + strconv.FormatUint(uint64(token), 10) + ":d:",
-		fields: make(map[int64]FieldBinding),
 	}, nil
 }
 
@@ -74,46 +69,64 @@ func (r *FieldRegistry) BindColumn(info *planpb.ColumnInfo, typ types.Type) (Fie
 	if typ.Nullability() != nullable {
 		return FieldBinding{}, false, merr.WrapErrServiceInternalMsg("predicateadapter: reference nullability disagrees with field %d", field.GetFieldID())
 	}
-	if existing, ok := r.fields[field.GetFieldID()]; ok {
-		if !existing.typ.EqualsTo(typ) {
+	if existing, ok := r.lookup(field.GetFieldID()); ok {
+		if !existing.Type().EqualsTo(typ) {
 			return FieldBinding{}, false, merr.WrapErrServiceInternalMsg("predicateadapter: conflicting reference Type for field %d", field.GetFieldID())
 		}
 		return existing, true, nil
 	}
 	binding := FieldBinding{
-		id:  adapterexpressions.NewColumnID(uint64(r.token), field.GetFieldID()),
-		typ: typ, field: field,
-		column: &planpb.ColumnInfo{
-			FieldId: field.GetFieldID(), DataType: field.GetDataType(),
-			IsPrimaryKey: field.GetIsPrimaryKey(), IsAutoID: field.GetAutoID(),
-			IsPartitionKey: field.GetIsPartitionKey(), IsClusteringKey: field.GetIsClusteringKey(),
-			Nullable: field.GetNullable(), ElementType: field.GetElementType(),
-		},
+		id:    adapterexpressions.NewColumnID(uint64(r.token), field.GetFieldID()),
+		field: field,
 	}
-	r.fields[field.GetFieldID()] = binding
+	binding.reference, err = expressions.NewReferenceExpression(binding.id, typ, field.GetName())
+	if err != nil {
+		return FieldBinding{}, false, err
+	}
+	r.fields = append(r.fields, binding)
 	return binding, true, nil
 }
 
-// Returns a registered binding only when the canonical session key and full Type match.
+// Searches the small set of registered fields without a separate index.
+func (r *FieldRegistry) lookup(fieldID int64) (FieldBinding, bool) {
+	for i := range r.fields {
+		if r.fields[i].field.GetFieldID() == fieldID {
+			return r.fields[i], true
+		}
+	}
+	return FieldBinding{}, false
+}
+
+// Resolves concrete numeric identities directly, with canonical-key fallback for compatible implementations.
 // Valid immutable IDs from any compatible implementation are accepted; lookup never registers a field.
 func (r *FieldRegistry) ResolveColumn(id expressioninterfaces.ColumnID, typ types.Type) (FieldBinding, error) {
 	if id == nil || typ == nil {
 		return FieldBinding{}, merr.WrapErrServiceInternalMsg("predicateadapter: missing reference identity or Type")
 	}
-	key := id.Key()
-	suffix, ok := strings.CutPrefix(key, r.prefix)
-	if !ok {
-		return FieldBinding{}, merr.WrapErrServiceInternalMsg("predicateadapter: reference does not belong to this session")
+	var fieldID int64
+	var key string
+	if concrete, ok := id.(*adapterexpressions.ColumnID); ok {
+		if concrete.Session() != uint64(r.token) {
+			return FieldBinding{}, merr.WrapErrServiceInternalMsg("predicateadapter: reference does not belong to this session")
+		}
+		fieldID = concrete.FieldID()
+	} else {
+		key = id.Key()
+		suffix, ok := strings.CutPrefix(key, "mvcol:v1:"+strconv.FormatUint(uint64(r.token), 10)+":d:")
+		if !ok {
+			return FieldBinding{}, merr.WrapErrServiceInternalMsg("predicateadapter: reference does not belong to this session")
+		}
+		var err error
+		fieldID, err = strconv.ParseInt(suffix, 10, 64)
+		if err != nil {
+			return FieldBinding{}, merr.WrapErrServiceInternalErr(err, "predicateadapter: invalid reference field key")
+		}
 	}
-	fieldID, err := strconv.ParseInt(suffix, 10, 64)
-	if err != nil {
-		return FieldBinding{}, merr.WrapErrServiceInternalErr(err, "predicateadapter: invalid reference field key")
-	}
-	binding, ok := r.fields[fieldID]
-	if !ok || binding.id.Key() != key {
+	binding, ok := r.lookup(fieldID)
+	if !ok || (key != "" && binding.id.Key() != key) {
 		return FieldBinding{}, merr.WrapErrServiceInternalMsg("predicateadapter: unregistered reference key")
 	}
-	if !binding.typ.EqualsTo(typ) {
+	if !binding.Type().EqualsTo(typ) {
 		return FieldBinding{}, merr.WrapErrServiceInternalMsg("predicateadapter: reference Type disagrees with registered field %d", fieldID)
 	}
 	return binding, nil
@@ -123,18 +136,21 @@ func (r *FieldRegistry) ResolveColumn(id expressioninterfaces.ColumnID, typ type
 func (b FieldBinding) ColumnID() *adapterexpressions.ColumnID { return b.id }
 
 // Returns the shared immutable optimizer Type.
-func (b FieldBinding) Type() types.Type { return b.typ }
+func (b FieldBinding) Type() types.Type { return b.reference.Type() }
 
 // Returns the borrowed schema field, which callers must keep read-only.
 func (b FieldBinding) Field() *schemapb.FieldSchema { return b.field }
 
 // Creates independently owned output metadata without copying protobuf runtime state.
 func (b FieldBinding) NewColumnInfo() *planpb.ColumnInfo {
-	c := b.column
+	c := b.field
 	return &planpb.ColumnInfo{
-		FieldId: c.FieldId, DataType: c.DataType,
-		IsPrimaryKey: c.IsPrimaryKey, IsAutoID: c.IsAutoID,
-		IsPartitionKey: c.IsPartitionKey, IsClusteringKey: c.IsClusteringKey,
-		Nullable: c.Nullable, ElementType: c.ElementType,
+		FieldId: c.GetFieldID(), DataType: c.GetDataType(),
+		IsPrimaryKey: c.GetIsPrimaryKey(), IsAutoID: c.GetAutoID(),
+		IsPartitionKey: c.GetIsPartitionKey(), IsClusteringKey: c.GetIsClusteringKey(),
+		Nullable: c.GetNullable(), ElementType: c.GetElementType(),
 	}
 }
+
+// Returns the immutable reference shared by occurrences of this session binding.
+func (b FieldBinding) Reference() *expressions.ReferenceExpression { return b.reference }

@@ -42,10 +42,10 @@ func roundTrip(ctx context.Context, input AttemptInput, validateExpr func(*planp
 	if cancelled := ctx.Err(); cancelled != nil {
 		return newAbortResult(StageSetup, report, cancelled)
 	}
-	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) || IsAdapterAbort(err) {
-		return newAbortResult(StageSetup, report, err)
-	}
 	if err != nil {
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) || IsAdapterAbort(err) {
+			return newAbortResult(StageSetup, report, err)
+		}
 		return newRetainedResult(OutcomeRuntimeUnavailable, StageSetup, report, err)
 	}
 	if runtime == nil {

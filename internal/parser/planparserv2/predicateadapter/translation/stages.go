@@ -27,15 +27,22 @@ type Translator struct {
 	context functioninterfaces.FunctionContext
 	// Pinned schema membership and metadata.
 	view *schema.View
-	// Value snapshot of shared immutable primitive descriptors.
-	primitives adapterruntime.PrimitiveTypes
+	// Shared descriptors used by the currently admitted native domains.
+	primitives primitiveTypes
+}
+
+// Non-null descriptor associations needed during translation; the runtime retains the full set.
+type primitiveTypes struct {
+	BoolNonNull                                           *types.BoolType
+	Int8NonNull, Int16NonNull, Int32NonNull, Int64NonNull *types.IntType
+	Float32NonNull, Float64NonNull                        *types.FloatType
 }
 
 // One imported graph and its field/opaque bindings.
 type ImportResult struct {
 	// Translator owning this graph and its pinned inputs.
 	owner *Translator
-	// Attempt-local preservation identities.
+	// Allocated on the first admitted opaque region.
 	opaques *translationutils.OpaqueRegistry
 	// Lazily allocated on the first admitted field-bearing import.
 	fields *schema.FieldRegistry
@@ -75,7 +82,12 @@ func New(runtime Runtime, view *schema.View, primitives adapterruntime.Primitive
 			return nil, merr.WrapErrServiceInternalMsg("predicate translation: inconsistent floating descriptor")
 		}
 	}
-	t := &Translator{runtime: runtime, factory: runtime.ValueFactory(), context: runtime.FunctionContext(), view: view, primitives: primitives}
+	t := &Translator{runtime: runtime, factory: runtime.ValueFactory(), context: runtime.FunctionContext(), view: view, primitives: primitiveTypes{
+		BoolNonNull: boolean,
+		Int8NonNull: primitives.Int8NonNull, Int16NonNull: primitives.Int16NonNull,
+		Int32NonNull: primitives.Int32NonNull, Int64NonNull: integer,
+		Float32NonNull: primitives.Float32NonNull, Float64NonNull: primitives.Float64NonNull,
+	}}
 	if t.factory == nil || t.context == nil {
 		return nil, merr.WrapErrServiceInternalMsg("predicate translation: missing runtime capabilities")
 	}
@@ -121,11 +133,7 @@ func (t *Translator) Import(ctx context.Context, source *planpb.Expr) (*ImportRe
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	registry, err := translationutils.NewOpaqueRegistry()
-	if err != nil {
-		return nil, newFailure(TranslationDefect, StageImport, err)
-	}
-	result := &ImportResult{owner: t, opaques: registry}
+	result := &ImportResult{owner: t}
 	visitor := &importer{ctx: ctx, result: result}
 	root, err := visitor.importExpr(source)
 	if err != nil {
@@ -166,7 +174,7 @@ func (t *Translator) Export(ctx context.Context, imported *ImportResult, graph e
 
 // Rejects missing or foreign state before accessing attempt-local tables.
 func (t *Translator) checkOwner(imported *ImportResult, stage Stage) error {
-	if imported == nil || imported.owner != t || imported.opaques == nil || imported.root == nil {
+	if imported == nil || imported.owner != t || imported.root == nil {
 		return translationDefect(stage, "foreign or incomplete imported state")
 	}
 	return nil

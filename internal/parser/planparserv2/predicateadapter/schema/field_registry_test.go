@@ -1,6 +1,7 @@
 package schema
 
 import (
+	"strconv"
 	"testing"
 
 	expressioninterfaces "github.com/lie-yan/predicate-optimization/expressions/interfaces"
@@ -42,10 +43,21 @@ func TestFieldRegistryBinding(t *testing.T) {
 	require.True(t, supported)
 	require.Same(t, first.ColumnID(), repeated.ColumnID())
 	require.Same(t, first.Type(), repeated.Type())
-	resolved, err := registry.ResolveColumn(registryIDPeer{first.ColumnID().Key()}, equivalentType)
-	require.NoError(t, err)
-	require.Same(t, schema.Fields[0], resolved.Field())
+	for _, id := range []expressioninterfaces.ColumnID{
+		first.ColumnID(),
+		adapterexpressions.NewColumnID(uint64(registry.token), schema.Fields[0].GetFieldID()),
+		registryIDPeer{first.ColumnID().Key()},
+	} {
+		resolved, err := registry.ResolveColumn(id, equivalentType)
+		require.NoError(t, err)
+		require.Same(t, schema.Fields[0], resolved.Field())
+	}
 	require.True(t, proto.Equal(before, info))
+	exported := first.NewColumnInfo()
+	require.True(t, proto.Equal(info, exported))
+	exported.IsPrimaryKey = false
+	exported.IsAutoID = false
+	require.True(t, proto.Equal(info, first.NewColumnInfo()))
 	// Binding consistency is independent of the motivating example's domain.
 	for _, tc := range []struct {
 		index int
@@ -57,9 +69,21 @@ func TestFieldRegistryBinding(t *testing.T) {
 		require.NoError(t, err)
 		require.True(t, supported)
 		require.False(t, first.ColumnID().EqualsTo(binding.ColumnID()))
-		resolved, err := registry.ResolveColumn(binding.ColumnID(), tc.typ)
+		require.True(t, proto.Equal(columnFixture(schema.Fields[tc.index]), binding.NewColumnInfo()))
+		resolved, err := registry.ResolveColumn(registryIDPeer{binding.ColumnID().Key()}, tc.typ)
 		require.NoError(t, err)
 		require.Same(t, schema.Fields[tc.index], resolved.Field())
+	}
+	// Adding other fields must preserve the first binding and both identity paths.
+	rebound, supported, err := registry.BindColumn(info, equivalentType)
+	require.NoError(t, err)
+	require.True(t, supported)
+	require.Same(t, first.ColumnID(), rebound.ColumnID())
+	require.Same(t, first.Reference(), rebound.Reference())
+	for _, id := range []expressioninterfaces.ColumnID{first.ColumnID(), registryIDPeer{first.ColumnID().Key()}} {
+		resolved, err := registry.ResolveColumn(id, equivalentType)
+		require.NoError(t, err)
+		require.Same(t, first.ColumnID(), resolved.ColumnID())
 	}
 }
 
@@ -108,11 +132,14 @@ func TestFieldRegistryResolution(t *testing.T) {
 	b, _, err := second.BindColumn(info, int64NonNullType)
 	require.NoError(t, err)
 	require.False(t, a.ColumnID().EqualsTo(b.ColumnID()))
+	prefix := "mvcol:v1:" + strconv.FormatUint(uint64(first.token), 10) + ":d:"
 	for name, id := range map[string]expressioninterfaces.ColumnID{
 		"foreign session":    b.ColumnID(),
+		"foreign peer":       registryIDPeer{b.ColumnID().Key()},
+		"unregistered peer":  registryIDPeer{prefix + "102"},
 		"unregistered field": adapterexpressions.NewColumnID(uint64(first.token), 102),
-		"noncanonical field": registryIDPeer{first.prefix + "0101"},
-		"invalid field":      registryIDPeer{first.prefix + "not-a-field"},
+		"noncanonical field": registryIDPeer{prefix + "0101"},
+		"invalid field":      registryIDPeer{prefix + "not-a-field"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			_, err := first.ResolveColumn(id, int64NonNullType)

@@ -34,7 +34,7 @@ func TestNamedLookupBinding(t *testing.T) {
 	for _, args := range [][]types.Type{{integer, integer}, {nullable, integer}} {
 		handle, err := catalog.LookupFunction(def.Name, args)
 		require.NoError(t, err)
-		require.True(t, handle.EqualsTo(catalog.handleAt(0)))
+		require.Same(t, catalog.handleAt(0), handle)
 		metadata, err := catalog.Metadata(handle)
 		require.NoError(t, err)
 		require.Same(t, def.Metadata, metadata)

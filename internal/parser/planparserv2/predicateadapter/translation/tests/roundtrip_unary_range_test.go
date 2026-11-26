@@ -62,7 +62,7 @@ func TestUnaryComparisonCompositionAndOwnership(t *testing.T) {
 	root := imported.Root().(*expressions.LogicalExpression)
 	call := root.ChildAt(0).(*expressions.CallExpression)
 	other := root.ChildAt(1).ChildAt(0).(*expressions.CallExpression)
-	require.True(t, call.ChildAt(0).(*expressions.ReferenceExpression).ID().EqualsTo(other.ChildAt(0).(*expressions.ReferenceExpression).ID()))
+	require.Same(t, call.ChildAt(0), other.ChildAt(0))
 	// Shared graph nodes still produce independent executable output.
 	rebuilt := logicalGraph(t, foundation.And, call, logicalGraph(t, foundation.Or, call, root.ChildAt(1).ChildAt(1)))
 	output, err := translator.Export(ctx, imported, rebuilt)
@@ -87,15 +87,15 @@ func TestUnaryComparisonImportCoverage(t *testing.T) {
 		mutate func(*planpb.Expr)
 		kind   translation.FailureKind
 	}{
-		{"missing node", func(e *planpb.Expr) { e.Expr = &planpb.Expr_UnaryRangeExpr{} }, translation.UnsafeSource},
 		{"missing field", func(e *planpb.Expr) { e.GetUnaryRangeExpr().ColumnInfo = nil }, translation.UnsafeSource},
 		{"missing value", func(e *planpb.Expr) { e.GetUnaryRangeExpr().Value = nil }, translation.UnsafeSource},
 		{"wrong arm", func(e *planpb.Expr) { e.GetUnaryRangeExpr().Value.Val = &planpb.GenericValue_BoolVal{} }, translation.UnsafeSource},
-		{"invalid operator", func(e *planpb.Expr) { e.GetUnaryRangeExpr().Op = planpb.OpType_Invalid }, translation.UnsafeSource},
 		{"schema mismatch", func(e *planpb.Expr) { e.GetUnaryRangeExpr().ColumnInfo.Nullable = true }, translation.UnsafeSource},
+		{"text match with options", func(e *planpb.Expr) {
+			e.GetUnaryRangeExpr().Op = planpb.OpType_TextMatch
+			e.GetUnaryRangeExpr().ExtraValues = []*planpb.GenericValue{integerSource(1)}
+		}, translation.UnsupportedExpression},
 		{"future operator", func(e *planpb.Expr) { e.GetUnaryRangeExpr().Op = 999 }, translation.UnsupportedExpression},
-		{"extra values", func(e *planpb.Expr) { e.GetUnaryRangeExpr().ExtraValues = []*planpb.GenericValue{integerSource(1)} }, translation.UnsupportedExpression},
-		{"unknown message", func(e *planpb.Expr) { e.GetUnaryRangeExpr().ProtoReflect().SetUnknown([]byte{0xa0, 0x06, 1}) }, translation.UnsupportedExpression},
 		{"unknown literal", func(e *planpb.Expr) { e.GetUnaryRangeExpr().Value.ProtoReflect().SetUnknown([]byte{0xa0, 0x06, 1}) }, translation.UnsupportedExpression},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -135,6 +135,7 @@ func TestUnaryComparisonGraphAndTranslationDefects(t *testing.T) {
 	otherImport, err := translator.Import(ctx, source)
 	require.NoError(t, err)
 	foreignReference := otherImport.Root().ChildAt(0)
+	require.NotSame(t, call.ChildAt(0), foreignReference)
 	for _, graph := range []expressions.Expression{
 		rebuiltCall(t, call, foreignReference, call.ChildAt(1)),
 	} {

@@ -50,6 +50,7 @@ func TestRoundTripRuntimeAcquisition(t *testing.T) {
 	runtime, err := adapterruntime.NewRuntime()
 	require.NoError(t, err)
 	cause := merr.WrapErrServiceInternalMsg("runtime initialization failed")
+	_, abort := newAbortResult(StageSetup, Report{}, cause)
 	for _, tc := range []struct {
 		name    string
 		runtime *adapterruntime.Runtime
@@ -62,6 +63,8 @@ func TestRoundTripRuntimeAcquisition(t *testing.T) {
 		{"cancel during failed setup", nil, cause, true, OutcomeUnknown},
 		{"cancel during successful setup", runtime, nil, true, OutcomeUnknown},
 		{"cancellation cause", nil, context.DeadlineExceeded, false, OutcomeUnknown},
+		{"wrapped cancellation", nil, merr.Wrap(context.Canceled, "runtime setup"), false, OutcomeUnknown},
+		{"wrapped abort", nil, merr.Wrap(abort, "runtime setup"), false, OutcomeUnknown},
 		{"missing runtime", nil, nil, false, OutcomeUnknown},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
