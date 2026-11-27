@@ -12,7 +12,7 @@ import (
 
 // Emits homogeneous scalar membership with a fresh sorted candidate list for native pruning.
 func (v *exporter) exportTerm(graph *expressions.SpecialFormExpression) (*planpb.Expr, error) {
-	if graph.Form() != foundation.SpecialFormIn || graph.Type().Nullability() != foundation.NonNull || graph.ChildCount() < 2 {
+	if graph.Form() != foundation.SpecialFormIn || graph.ChildCount() < 2 {
 		return nil, unsupportedExport("membership form or domain")
 	}
 	target := graph.ChildAt(0)
@@ -29,7 +29,7 @@ func (v *exporter) exportTerm(graph *expressions.SpecialFormExpression) (*planpb
 			return nil, err
 		}
 		candidate := graph.ChildAt(i + 1)
-		if !target.Type().EqualsTo(candidate.Type()) {
+		if !target.Type().EqualsToIgnoringNullability(candidate.Type()) {
 			return nil, unsupportedExport("heterogeneous membership")
 		}
 		values[i], err = exportScalar(candidate)

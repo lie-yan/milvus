@@ -2,9 +2,11 @@ package translation
 
 import (
 	"context"
+	"errors"
 
 	"github.com/lie-yan/predicate-optimization/expressions"
 	"github.com/lie-yan/predicate-optimization/foundation"
+	shared "github.com/lie-yan/predicate-optimization/functions"
 	valueinterfaces "github.com/lie-yan/predicate-optimization/values/interfaces"
 
 	"github.com/milvus-io/milvus/pkg/v3/proto/planpb"
@@ -43,7 +45,7 @@ func (v *exporter) exportExpr(graph expressions.Expression) (*planpb.Expr, error
 	case *expressions.LogicalExpression:
 		return v.exportLogical(node)
 	case *expressions.CallExpression:
-		return v.exportComparison(node)
+		return v.exportCall(node)
 	case *expressions.SpecialFormExpression:
 		return v.exportTerm(node)
 	default:
@@ -54,4 +56,23 @@ func (v *exporter) exportExpr(graph expressions.Expression) (*planpb.Expr, error
 // Reports a valid graph outside executable export coverage, without a partial candidate.
 func unsupportedExport(message string) error {
 	return newFailure(UnsupportedExpression, StageExport, merr.Wrap(merr.ErrServiceUnimplemented, "predicate translation: "+message))
+}
+
+// Keeps comparison export on its existing lookup path and resolves other owned built-ins on a miss.
+func (v *exporter) exportCall(call *expressions.CallExpression) (*planpb.Expr, error) {
+	op, err := v.imported.owner.runtime.ComparisonOperator(call.Handle())
+	if err == nil {
+		return v.exportComparison(call, op)
+	}
+	if !errors.Is(err, shared.ErrUnsupportedLookup) {
+		return nil, newFailure(TranslationDefect, StageExport, err)
+	}
+	metadata, err := v.imported.owner.context.Metadata(call.Handle())
+	if err != nil {
+		return nil, newFailure(TranslationDefect, StageExport, err)
+	}
+	if name, present := metadata.BuiltInName().Get(); present && (name == shared.BuiltInArrayContains || name == shared.BuiltInArrayContainsAny) {
+		return v.exportArrayMembership(call, name)
+	}
+	return nil, unsupportedExport("function has no executable mapping")
 }

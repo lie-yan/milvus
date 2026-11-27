@@ -47,6 +47,19 @@ func TestRuntimeConstructionAndMapping(t *testing.T) {
 			require.Equal(t, tc.milvus, mapped)
 		}
 	}
+	// Parameterized comparisons are available through the same runtime/provider routes.
+	for _, bound := range []uint64{16, 128} {
+		text, err := types.NewVarCharType(&bound, foundation.MayNull)
+		require.NoError(t, err)
+		for _, op := range []planpb.OpType{planpb.OpType_Equal, planpb.OpType_NotEqual} {
+			handle, err := runtime.ComparisonFunction(op, text, text)
+			require.NoError(t, err)
+			recovered, err := runtime.ComparisonOperator(handle)
+			require.NoError(t, err)
+			require.Equal(t, op, recovered)
+			require.True(t, handle.Signature().ArgumentTypeAt(0).EqualsToIgnoringNullability(text))
+		}
+	}
 	value, err := runtime.ValueFactory().NewInteger(primitives.Int64NonNull, 42)
 	require.NoError(t, err)
 	require.Same(t, primitives.Int64NonNull, value.Type())

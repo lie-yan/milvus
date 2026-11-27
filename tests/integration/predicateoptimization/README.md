@@ -18,3 +18,18 @@ Each test arms exact deterministic protobuf hashes computed from the same collec
 The observation action preserves the adapter input and output. The pause action blocks one selected attempt behind a bounded release barrier, allowing the real client RPC to be canceled before translation completes. The unsafe-source action substitutes an empty internal expression immediately before the real round trip: admission and orchestration must generate the real abort, and the actual query/search/scorer RPC boundary must preserve its system classification. Fault cases do not claim that an ordinary user can produce that malformed internal expression.
 
 The uninstrumented binary's parity result is recorded separately in W08. The observed fixture adds evidence that enabled requests translate instead of merely retaining their inputs. No optimizer pass runs. Future rewrite tests should use separate semantic expectations without weakening these empty-pipeline checks.
+
+## Complete touchstone gate
+
+`TestEmptyPipeline/TestTouchstoneExecutionParity` uses the shared fixture under
+`internal/parser/planparserv2/predicateadapter/tests/touchstone`. It checks the
+primary and nullable-article schemas with the switch off/on, before and after
+INVERTED scalar indexes. Queries for P and NOT P establish TRUE/FALSE/UNKNOWN
+against the recorded independent expectations. Enabled requests require an
+OutcomeTranslated receipt and unchanged source; an array probe confirms the
+native scan/index path. This test uses zero optimizer passes.
+
+The corresponding local parser test, `TestPredicateOptimizationTouchstoneWiring`,
+checks both legacy rewrite settings, requires every touchstone operation to be
+exposed (no opaque leaves), and forbids evaluation. Native results must be recorded
+before declaring the touchstone empty-pipeline gate passed.

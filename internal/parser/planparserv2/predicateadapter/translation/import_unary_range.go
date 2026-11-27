@@ -15,7 +15,7 @@ type unaryRangeOperands struct {
 	literal literalOperand
 }
 
-// Admits only the eight existing Bool/Int64 comparisons, without allocating graph or registry state.
+// Admits scalar comparisons supported by the catalog without implicit conversion.
 func (v *importer) readUnaryRangeOperands(node *planpb.Expr_UnaryRangeExpr) (unaryRangeOperands, error) {
 	// Milvus supplies a populated plan; only translation coverage needs checking here.
 	assertions.NotNilPointer(node)
@@ -33,12 +33,8 @@ func (v *importer) readUnaryRangeOperands(node *planpb.Expr_UnaryRangeExpr) (una
 	if reason != noLimitation {
 		return unaryRangeOperands{}, unsupportedSource(reason)
 	}
-	boolean := v.result.owner.primitives.BoolNonNull.EqualsTo(field.typ)
-	if !boolean && !v.result.owner.primitives.Int64NonNull.EqualsTo(field.typ) {
-		return unaryRangeOperands{}, unsupportedSource(excludedDomain)
-	}
-	if boolean && n.Op != planpb.OpType_Equal && n.Op != planpb.OpType_NotEqual {
-		return unaryRangeOperands{}, unsupportedSource(unsupportedForm)
+	if reason := comparisonDomain(field.typ, n.Op); reason != noLimitation {
+		return unaryRangeOperands{}, unsupportedSource(reason)
 	}
 	literal, reason, err := v.result.owner.readLiteralOperand(n.Value, field.typ)
 	if err != nil {

@@ -3,6 +3,7 @@ package translation
 import (
 	"github.com/lie-yan/predicate-optimization/expressions"
 	"github.com/lie-yan/predicate-optimization/foundation"
+	"github.com/lie-yan/predicate-optimization/types"
 
 	"github.com/milvus-io/milvus/pkg/v3/proto/planpb"
 	"github.com/milvus-io/milvus/pkg/v3/util/merr"
@@ -108,7 +109,7 @@ func (v *importer) importLogical(source *planpb.Expr) (expressions.Expression, e
 		if err != nil {
 			return nil, err
 		}
-		if !v.result.owner.primitives.BoolNonNull.EqualsTo(childGraph.Type()) {
+		if _, boolean := childGraph.Type().(*types.BoolType); !boolean {
 			return nil, unsupportedSource(excludedDomain)
 		}
 		graphs[i] = childGraph

@@ -38,43 +38,45 @@ func TestTermMappings(t *testing.T) {
 		{schemapb.DataType_Double, []*planpb.GenericValue{floatSource(math.Inf(1)), floatSource(math.Copysign(0, -1)), floatSource(0), floatSource(math.Inf(-1))}},
 		{schemapb.DataType_VarChar, []*planpb.GenericValue{stringSource("é"), stringSource(""), stringSource("a\x00"), stringSource("z"), stringSource("é")}},
 	} {
-		t.Run(tc.typ.String(), func(t *testing.T) {
-			translator, fields := compareFixture(t, tc.typ, tc.typ, false)
-			for _, count := range []int{1, len(tc.values)} {
-				source := termSource(fields.GetCompareExpr().LeftColumnInfo, tc.values[:count]...)
-				for _, negated := range []bool{false, true} {
-					input := source
-					if negated {
-						input = notSource(source)
-						input.IsTemplate = true
-					}
-					imported := importSource(t, translator, input)
-					in := imported.Root()
-					if negated {
-						in = in.ChildAt(0)
-					}
-					special := in.(*expressions.SpecialFormExpression)
-					rebuilt, err := expressions.NewSpecialFormExpression(special.Form(), special.Type(), special.Children())
-					require.NoError(t, err)
-					var graph expressions.Expression = rebuilt
-					if negated {
-						graph = logicalGraph(t, foundation.Not, rebuilt)
-					}
-					output, err := translator.Export(context.Background(), imported, graph)
-					require.NoError(t, err)
-					require.True(t, proto.Equal(expectedExport(input), output))
-					term := output.GetTermExpr()
-					if negated {
-						term = output.GetUnaryExpr().Child.GetTermExpr()
-					}
-					for i, value := range expectedExport(source).GetTermExpr().Values {
-						if _, ok := value.Val.(*planpb.GenericValue_FloatVal); ok {
-							require.Equal(t, math.Float64bits(value.GetFloatVal()), math.Float64bits(term.Values[i].GetFloatVal()))
+		for _, nullable := range []bool{false, true} {
+			t.Run(tc.typ.String(), func(t *testing.T) {
+				translator, fields := compareFixture(t, tc.typ, tc.typ, nullable)
+				for _, count := range []int{1, len(tc.values)} {
+					source := termSource(fields.GetCompareExpr().RightColumnInfo, tc.values[:count]...)
+					for _, negated := range []bool{false, true} {
+						input := source
+						if negated {
+							input = notSource(source)
+							input.IsTemplate = true
+						}
+						imported := importSource(t, translator, input)
+						in := imported.Root()
+						if negated {
+							in = in.ChildAt(0)
+						}
+						special := in.(*expressions.SpecialFormExpression)
+						rebuilt, err := expressions.NewSpecialFormExpression(special.Form(), special.Type(), special.Children())
+						require.NoError(t, err)
+						var graph expressions.Expression = rebuilt
+						if negated {
+							graph = logicalGraph(t, foundation.Not, rebuilt)
+						}
+						output, err := translator.Export(context.Background(), imported, graph)
+						require.NoError(t, err)
+						require.True(t, proto.Equal(expectedExport(input), output))
+						term := output.GetTermExpr()
+						if negated {
+							term = output.GetUnaryExpr().Child.GetTermExpr()
+						}
+						for i, value := range expectedExport(source).GetTermExpr().Values {
+							if _, ok := value.Val.(*planpb.GenericValue_FloatVal); ok {
+								require.Equal(t, math.Float64bits(value.GetFloatVal()), math.Float64bits(term.Values[i].GetFloatVal()))
+							}
 						}
 					}
 				}
-			}
-		})
+			})
+		}
 	}
 }
 
@@ -102,8 +104,8 @@ func TestTermImportCoverage(t *testing.T) {
 		})
 	}
 	translator, fields := compareFixture(t, schemapb.DataType_Int64, schemapb.DataType_Int64, true)
-	_, err := translator.Import(context.Background(), termSource(fields.GetCompareExpr().RightColumnInfo, integerSource(1)))
-	assertFailure(t, err, translation.UnsupportedExpression, translation.StageImport)
+	imported := importSource(t, translator, termSource(fields.GetCompareExpr().RightColumnInfo, integerSource(1)))
+	require.Equal(t, foundation.MayNull, imported.Root().Type().Nullability())
 	for _, change := range []func(*planpb.TermExpr){
 		func(n *planpb.TermExpr) { n.IsInField = true },
 		func(n *planpb.TermExpr) { n.ProtoReflect().SetUnknown([]byte{0xa0, 0x06, 1}) },

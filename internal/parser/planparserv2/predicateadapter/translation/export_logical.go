@@ -9,9 +9,6 @@ import (
 
 // Lowers n-ary logic into an order-preserving balanced native tree.
 func (v *exporter) exportLogical(graph *expressions.LogicalExpression) (*planpb.Expr, error) {
-	if graph.Type().Nullability() != foundation.NonNull {
-		return nil, unsupportedExport("nullable logical expression")
-	}
 	if graph.Operator() == foundation.Not {
 		child, err := v.exportExpr(graph.ChildAt(0))
 		if err != nil {

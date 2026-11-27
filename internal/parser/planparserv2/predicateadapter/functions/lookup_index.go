@@ -10,6 +10,8 @@ type overloadSet struct {
 	entries []int
 	// Argument signatures ignoring outer nullability, never result Types.
 	scalar map[scalarSignature][]int
+	// Parameterized candidates, filtered by arity before binding.
+	parameterized []int
 	// Every registered signature can be represented by the scalar index.
 	scalarOnly bool
 }
@@ -83,4 +85,18 @@ func (s *overloadSet) candidates(args []types.Type) []int {
 		}
 	}
 	return s.entries
+}
+
+// Keeps fixed signatures indexed while collecting parameterized declarations separately.
+func addDeclaration[K comparable](index map[K]*overloadSet, key K, position int, entry *functionEntry) {
+	if entry.metadata != nil {
+		addOverload(index, key, position, entry.metadata.Signature().ArgumentTypes())
+		return
+	}
+	set := index[key]
+	if set == nil {
+		set = &overloadSet{scalar: make(map[scalarSignature][]int), scalarOnly: true}
+		index[key] = set
+	}
+	set.parameterized = append(set.parameterized, position)
 }

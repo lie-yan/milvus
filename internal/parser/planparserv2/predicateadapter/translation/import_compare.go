@@ -2,7 +2,6 @@ package translation
 
 import (
 	"github.com/lie-yan/predicate-optimization/expressions"
-	"github.com/lie-yan/predicate-optimization/types"
 
 	"github.com/milvus-io/milvus/pkg/v3/proto/planpb"
 )
@@ -15,7 +14,7 @@ type compareOperands struct {
 	right fieldOperand
 }
 
-// Admits same-Type numeric comparisons and Bool equality without casts or evaluation.
+// Admits same-domain scalar comparisons without casts or evaluation.
 func (v *importer) readCompareOperands(node *planpb.Expr_CompareExpr) (*compareOperands, error) {
 	if node == nil || node.CompareExpr == nil {
 		return nil, sourceDefect("missing field comparison")
@@ -50,17 +49,11 @@ func (v *importer) readCompareOperands(node *planpb.Expr_CompareExpr) (*compareO
 	if rightReason != noLimitation {
 		return nil, unsupportedSource(rightReason)
 	}
-	if !left.typ.EqualsTo(right.typ) {
+	if !left.typ.EqualsToIgnoringNullability(right.typ) {
 		return nil, unsupportedSource(excludedDomain)
 	}
-	switch left.typ.(type) {
-	case *types.IntType, *types.FloatType:
-	case *types.BoolType:
-		if n.Op != planpb.OpType_Equal && n.Op != planpb.OpType_NotEqual {
-			return nil, unsupportedSource(unsupportedForm)
-		}
-	default:
-		return nil, unsupportedSource(excludedDomain)
+	if reason := comparisonDomain(left.typ, n.Op); reason != noLimitation {
+		return nil, unsupportedSource(reason)
 	}
 	return &compareOperands{left: left, right: right}, nil
 }

@@ -63,7 +63,7 @@ func TestFieldOperandRoundTripAndRole(t *testing.T) {
 	translator, registry, columns := operandFixture(t)
 	var operands []fieldOperand
 	var graphs []*expressions.ReferenceExpression
-	for _, column := range columns[:3] {
+	for _, column := range columns[:4] {
 		operand, reason, err := translator.readFieldOperand(column)
 		require.NoError(t, err)
 		require.Equal(t, noLimitation, reason)
@@ -118,7 +118,7 @@ func TestOperandImportCoverageCoverageAndDefects(t *testing.T) {
 	nested.NestedPath = []string{"x"}
 	unknownColumn := proto.Clone(columns[0]).(*planpb.ColumnInfo)
 	unknownColumn.ProtoReflect().SetUnknown([]byte{0xa0, 0x06, 1})
-	for _, column := range []*planpb.ColumnInfo{columns[3], nested, unknownColumn} {
+	for _, column := range []*planpb.ColumnInfo{nested, unknownColumn} {
 		operand, reason, err := translator.readFieldOperand(column)
 		require.NoError(t, err)
 		require.NotEqual(t, noLimitation, reason)
@@ -148,12 +148,7 @@ func TestOperandImportCoverageCoverageAndDefects(t *testing.T) {
 	_, reason, err := translator.readLiteralOperand(unknown, translator.primitives.Int64NonNull)
 	require.NoError(t, err)
 	require.Equal(t, excludedScopeOrVersion, reason)
-	plain := &planpb.GenericValue{Val: &planpb.GenericValue_Int64Val{Int64Val: 1}}
-	for _, typ := range []types.Type{nullableIntegerType(t)} {
-		_, reason, err := translator.readLiteralOperand(plain, typ)
-		require.NoError(t, err)
-		require.Equal(t, excludedDomain, reason)
-	}
+
 }
 
 // Public payload views deliberately hide the factory's concrete Value representation.

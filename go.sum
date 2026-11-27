@@ -736,6 +736,8 @@ github.com/lie-yan/predicate-optimization v0.0.0-20261126124156-0cca45743f43 h1:
 github.com/lie-yan/predicate-optimization v0.0.0-20261126124156-0cca45743f43/go.mod h1:BumI/xoWVHkL42ZnCSUtTbXFbmC+p30ZBsxnqyr6OOk=
 github.com/lie-yan/predicate-optimization v0.0.0-20261126130815-2361445edc32 h1:gYgpg1NibUyg4XpILZYuC+0Oo11urMSZmgnn+Mf0zmc=
 github.com/lie-yan/predicate-optimization v0.0.0-20261126130815-2361445edc32/go.mod h1:BumI/xoWVHkL42ZnCSUtTbXFbmC+p30ZBsxnqyr6OOk=
+github.com/lie-yan/predicate-optimization v0.0.0-20261126142937-e6870174d759 h1:wJoCmkYXRBoaj8YmRMF5RhUz9GZGVQFrj4k29+r+ndY=
+github.com/lie-yan/predicate-optimization v0.0.0-20261126142937-e6870174d759/go.mod h1:BumI/xoWVHkL42ZnCSUtTbXFbmC+p30ZBsxnqyr6OOk=
 github.com/linkedin/goavro v2.1.0+incompatible/go.mod h1:bBCwI2eGYpUI/4820s67MElg9tdeLbINjLjiM2xZFYM=
 github.com/linkedin/goavro/v2 v2.10.0/go.mod h1:UgQUb2N/pmueQYH9bfqFioWxzYCZXSfF8Jw03O5sjqA=
 github.com/linkedin/goavro/v2 v2.10.1/go.mod h1:UgQUb2N/pmueQYH9bfqFioWxzYCZXSfF8Jw03O5sjqA=

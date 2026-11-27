@@ -42,11 +42,16 @@ func (t *Translator) readFieldOperand(source *planpb.ColumnInfo) (fieldOperand, 
 	if !supported {
 		return fieldOperand{}, excludedScopeOrVersion, nil
 	}
-	if field.GetNullable() {
-		return fieldOperand{}, excludedDomain, nil
-	}
 	var typ types.Type
-	switch field.GetDataType() {
+	dataType := field.GetDataType()
+	array := dataType == schemapb.DataType_Array
+	if array {
+		if field.GetElementNullable() || field.GetElementType() == schemapb.DataType_VarChar {
+			return fieldOperand{}, excludedDomain, nil
+		}
+		dataType = field.GetElementType()
+	}
+	switch dataType {
 	case schemapb.DataType_Bool:
 		typ = t.primitives.BoolNonNull
 	case schemapb.DataType_Int8:
@@ -57,6 +62,9 @@ func (t *Translator) readFieldOperand(source *planpb.ColumnInfo) (fieldOperand, 
 		typ = t.primitives.Int32NonNull
 	case schemapb.DataType_Int64:
 		typ = t.primitives.Int64NonNull
+		if field.GetNullable() && !array {
+			typ = t.primitives.Int64MayNull
+		}
 	case schemapb.DataType_Float:
 		typ = t.primitives.Float32NonNull
 	case schemapb.DataType_Double:
@@ -75,12 +83,28 @@ func (t *Translator) readFieldOperand(source *planpb.ColumnInfo) (fieldOperand, 
 		if maxBytes == 0 {
 			return fieldOperand{}, noLimitation, sourceDefect("invalid zero VARCHAR schema bound")
 		}
-		typ, err = types.NewVarCharType(&maxBytes, foundation.NonNull)
+		nullability := foundation.NonNull
+		if field.GetNullable() {
+			nullability = foundation.MayNull
+		}
+		typ, err = types.NewVarCharType(&maxBytes, nullability)
 		if err != nil {
 			return fieldOperand{}, noLimitation, newFailure(UnsafeSource, StageImport, err)
 		}
 	default:
 		return fieldOperand{}, excludedDomain, nil
+	}
+	if array {
+		typ, err = types.NewArrayType(typ, foundation.NonNull)
+		if err != nil {
+			return fieldOperand{}, noLimitation, newFailure(TranslationDefect, StageImport, err)
+		}
+	}
+	if field.GetNullable() && typ.Nullability() != foundation.MayNull {
+		typ, err = typ.WithNullability(foundation.MayNull)
+		if err != nil {
+			return fieldOperand{}, noLimitation, newFailure(TranslationDefect, StageImport, err)
+		}
 	}
 	return fieldOperand{source: source, typ: typ}, noLimitation, nil
 }
@@ -96,8 +120,14 @@ func (t *Translator) readLiteralOperand(source *planpb.GenericValue, typ types.T
 	if typ == nil {
 		return literalOperand{}, noLimitation, sourceDefect("missing literal Type")
 	}
-	if typ.Nullability() != foundation.NonNull {
-		return literalOperand{}, excludedDomain, nil
+	if typ == t.primitives.Int64MayNull {
+		typ = t.primitives.Int64NonNull
+	} else if typ.Nullability() != foundation.NonNull {
+		var err error
+		typ, err = typ.WithNullability(foundation.NonNull)
+		if err != nil {
+			return literalOperand{}, noLimitation, newFailure(TranslationDefect, StageImport, err)
+		}
 	}
 	switch scalar := typ.(type) {
 	case *types.BoolType:
@@ -152,8 +182,21 @@ func importField(registry *schema.FieldRegistry, operand fieldOperand) (*express
 	return binding.Reference(), nil
 }
 
-// Copies exact scalar payloads through the selected factory without coercion or evaluation.
+// Constructs a scalar graph leaf from an exact native payload.
 func (t *Translator) importLiteral(operand literalOperand) (*expressions.LiteralExpression, error) {
+	value, err := t.importScalarValue(operand)
+	if err != nil {
+		return nil, err
+	}
+	graph, err := expressions.NewLiteralExpression(value)
+	if err != nil {
+		return nil, newFailure(TranslationDefect, StageImport, err)
+	}
+	return graph, nil
+}
+
+// Copies exact scalar payloads through the selected factory without coercion or evaluation.
+func (t *Translator) importScalarValue(operand literalOperand) (valueinterfaces.Value, error) {
 	var value valueinterfaces.Value
 	var err error
 	switch payload := operand.source.Val.(type) {
@@ -171,11 +214,7 @@ func (t *Translator) importLiteral(operand literalOperand) (*expressions.Literal
 	if err != nil {
 		return nil, newFailure(TranslationDefect, StageImport, err)
 	}
-	graph, err := expressions.NewLiteralExpression(value)
-	if err != nil {
-		return nil, newFailure(TranslationDefect, StageImport, err)
-	}
-	return graph, nil
+	return value, nil
 }
 
 // Copies canonical metadata from the binding selected by the actual reference.

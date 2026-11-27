@@ -38,23 +38,25 @@ func TestBinaryRangeMappings(t *testing.T) {
 		{schemapb.DataType_Float, floatSource(-math.MaxFloat32), floatSource(math.MaxFloat32)},
 		{schemapb.DataType_Double, floatSource(-math.MaxFloat64), floatSource(math.MaxFloat64)},
 	} {
-		t.Run(tc.typ.String(), func(t *testing.T) {
-			translator, null, _ := opaqueFixture(t, tc.typ, false)
-			for _, lowerInc := range []bool{false, true} {
-				for _, upperInc := range []bool{false, true} {
-					source := rangeSource(null.GetNullExpr().ColumnInfo, tc.lower, tc.upper)
-					source.GetBinaryRangeExpr().LowerInclusive = lowerInc
-					source.GetBinaryRangeExpr().UpperInclusive = upperInc
-					imported := importSource(t, translator, source)
-					graph := imported.Root()
-					require.True(t, graph.ChildAt(0).ChildAt(0).(*expressions.ReferenceExpression).ID().EqualsTo(graph.ChildAt(1).ChildAt(0).(*expressions.ReferenceExpression).ID()))
-					rebuilt := logicalGraph(t, foundation.And, rebuiltCall(t, graph.ChildAt(0).(*expressions.CallExpression), graph.ChildAt(0).ChildAt(0), graph.ChildAt(0).ChildAt(1)), graph.ChildAt(1))
-					output, err := translator.Export(context.Background(), imported, rebuilt)
-					require.NoError(t, err)
-					require.True(t, proto.Equal(expectedExport(source), output))
+		for _, nullable := range []bool{false, true} {
+			t.Run(tc.typ.String(), func(t *testing.T) {
+				translator, null, _ := opaqueFixture(t, tc.typ, nullable)
+				for _, lowerInc := range []bool{false, true} {
+					for _, upperInc := range []bool{false, true} {
+						source := rangeSource(null.GetNullExpr().ColumnInfo, tc.lower, tc.upper)
+						source.GetBinaryRangeExpr().LowerInclusive = lowerInc
+						source.GetBinaryRangeExpr().UpperInclusive = upperInc
+						imported := importSource(t, translator, source)
+						graph := imported.Root()
+						require.True(t, graph.ChildAt(0).ChildAt(0).(*expressions.ReferenceExpression).ID().EqualsTo(graph.ChildAt(1).ChildAt(0).(*expressions.ReferenceExpression).ID()))
+						rebuilt := logicalGraph(t, foundation.And, rebuiltCall(t, graph.ChildAt(0).(*expressions.CallExpression), graph.ChildAt(0).ChildAt(0), graph.ChildAt(0).ChildAt(1)), graph.ChildAt(1))
+						output, err := translator.Export(context.Background(), imported, rebuilt)
+						require.NoError(t, err)
+						require.True(t, proto.Equal(expectedExport(source), output))
+					}
 				}
-			}
-		})
+			})
+		}
 	}
 	// Equal endpoints preserve separate roles and signed-zero payloads.
 	translator, null, _ := opaqueFixture(t, schemapb.DataType_Double, false)
@@ -90,7 +92,7 @@ func TestBinaryRangeImportCoverage(t *testing.T) {
 		typ      schemapb.DataType
 		nullable bool
 	}{
-		{schemapb.DataType_Bool, false}, {schemapb.DataType_VarChar, false}, {schemapb.DataType_Int64, true},
+		{schemapb.DataType_Bool, false}, {schemapb.DataType_VarChar, false},
 	} {
 		translator, fields := compareFixture(t, tc.typ, tc.typ, tc.nullable)
 		source := rangeSource(fields.GetCompareExpr().RightColumnInfo, integerSource(0), integerSource(1))

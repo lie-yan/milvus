@@ -1,37 +1,16 @@
 package translation
 
 import (
-	"errors"
-
 	"github.com/lie-yan/predicate-optimization/expressions"
-	"github.com/lie-yan/predicate-optimization/foundation"
-	shared "github.com/lie-yan/predicate-optimization/functions"
-	"github.com/lie-yan/predicate-optimization/types"
 
 	"github.com/milvus-io/milvus/pkg/v3/proto/planpb"
 )
 
 // Chooses a native comparison from the owned operator and actual operand kinds.
-func (v *exporter) exportComparison(graph *expressions.CallExpression) (*planpb.Expr, error) {
-	op, err := v.imported.owner.runtime.ComparisonOperator(graph.Handle())
-	if err != nil {
-		if errors.Is(err, shared.ErrUnsupportedLookup) {
-			return nil, unsupportedExport("function has no executable comparison mapping")
-		}
-		return nil, newFailure(TranslationDefect, StageExport, err)
-	}
+func (v *exporter) exportComparison(graph *expressions.CallExpression, op planpb.OpType) (*planpb.Expr, error) {
 	left, right := graph.ChildAt(0), graph.ChildAt(1)
-	if graph.Type().Nullability() != foundation.NonNull || left.Type().Nullability() != foundation.NonNull || !left.Type().EqualsTo(right.Type()) {
-		return nil, unsupportedExport("comparison requires same-Type nonnull operands")
-	}
-	switch left.Type().(type) {
-	case *types.IntType, *types.FloatType:
-	case *types.BoolType:
-		if op != planpb.OpType_Equal && op != planpb.OpType_NotEqual {
-			return nil, unsupportedExport("ordered Bool comparison")
-		}
-	default:
-		return nil, unsupportedExport("comparison domain")
+	if !left.Type().EqualsToIgnoringNullability(right.Type()) || comparisonDomain(left.Type(), op) != noLimitation {
+		return nil, unsupportedExport("comparison requires matching scalar domains and a supported operator")
 	}
 	if _, ok := left.(*expressions.LiteralExpression); ok {
 		left, right = right, left

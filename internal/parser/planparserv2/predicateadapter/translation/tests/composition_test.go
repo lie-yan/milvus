@@ -157,11 +157,7 @@ func TestCompositionImportCoverageAndLateGraphFailure(t *testing.T) {
 		bad := replaceLastGraph(t, imported.Root(), leaf)
 		output, err := translator.Export(ctx, imported, bad)
 		require.Nil(t, output)
-		if leaf == wrongType {
-			assertFailure(t, err, translation.UnsupportedExpression, translation.StageExport)
-		} else {
-			assertFailure(t, err, translation.TranslationDefect, translation.StageExport)
-		}
+		assertFailure(t, err, translation.TranslationDefect, translation.StageExport)
 	}
 }
 

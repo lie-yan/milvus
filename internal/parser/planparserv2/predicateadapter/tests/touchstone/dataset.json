@@ -1,0 +1,447 @@
+[
+  {
+    "case": "allowed-tsa_01",
+    "schema": "primary",
+    "row": {
+      "article_type": "tsa_01",
+      "is_review": 8795001,
+      "brand_id": 0,
+      "tag_ids": [],
+      "category_ids": [],
+      "mall_ids": [],
+      "pk": 1
+    },
+    "expected_input": "TRUE",
+    "expected_reduced": "TRUE"
+  },
+  {
+    "case": "allowed-tsa_02",
+    "schema": "primary",
+    "row": {
+      "article_type": "tsa_02",
+      "is_review": 8795001,
+      "brand_id": 0,
+      "tag_ids": [],
+      "category_ids": [],
+      "mall_ids": [],
+      "pk": 2
+    },
+    "expected_input": "TRUE",
+    "expected_reduced": "TRUE"
+  },
+  {
+    "case": "allowed-tsa_03",
+    "schema": "primary",
+    "row": {
+      "article_type": "tsa_03",
+      "is_review": 8795001,
+      "brand_id": 0,
+      "tag_ids": [],
+      "category_ids": [],
+      "mall_ids": [],
+      "pk": 3
+    },
+    "expected_input": "TRUE",
+    "expected_reduced": "TRUE"
+  },
+  {
+    "case": "excluded-tsa_04",
+    "schema": "primary",
+    "row": {
+      "article_type": "tsa_04",
+      "is_review": 8795001,
+      "brand_id": 0,
+      "tag_ids": [],
+      "category_ids": [],
+      "mall_ids": [],
+      "pk": 4
+    },
+    "expected_input": "FALSE",
+    "expected_reduced": "FALSE"
+  },
+  {
+    "case": "excluded-other",
+    "schema": "primary",
+    "row": {
+      "article_type": "other",
+      "is_review": 8795001,
+      "brand_id": 0,
+      "tag_ids": [],
+      "category_ids": [],
+      "mall_ids": [],
+      "pk": 5
+    },
+    "expected_input": "FALSE",
+    "expected_reduced": "FALSE"
+  },
+  {
+    "case": "excluded-",
+    "schema": "primary",
+    "row": {
+      "article_type": "",
+      "is_review": 8795001,
+      "brand_id": 0,
+      "tag_ids": [],
+      "category_ids": [],
+      "mall_ids": [],
+      "pk": 6
+    },
+    "expected_input": "FALSE",
+    "expected_reduced": "FALSE"
+  },
+  {
+    "case": "irrelevant-tags",
+    "schema": "primary",
+    "row": {
+      "article_type": "tsa_01",
+      "is_review": 8795001,
+      "brand_id": 0,
+      "tag_ids": [
+        8791001,
+        8791002,
+        8791001
+      ],
+      "category_ids": [],
+      "mall_ids": [],
+      "pk": 7
+    },
+    "expected_input": "TRUE",
+    "expected_reduced": "TRUE"
+  },
+  {
+    "case": "excluded-tag-8791003",
+    "schema": "primary",
+    "row": {
+      "article_type": "tsa_01",
+      "is_review": 8795001,
+      "brand_id": 0,
+      "tag_ids": [
+        42,
+        8791003,
+        8791003
+      ],
+      "category_ids": [],
+      "mall_ids": [],
+      "pk": 8
+    },
+    "expected_input": "FALSE",
+    "expected_reduced": "FALSE"
+  },
+  {
+    "case": "excluded-tag-8791004",
+    "schema": "primary",
+    "row": {
+      "article_type": "tsa_01",
+      "is_review": 8795001,
+      "brand_id": 0,
+      "tag_ids": [
+        42,
+        8791004,
+        8791004
+      ],
+      "category_ids": [],
+      "mall_ids": [],
+      "pk": 9
+    },
+    "expected_input": "FALSE",
+    "expected_reduced": "FALSE"
+  },
+  {
+    "case": "excluded-tag-8791005",
+    "schema": "primary",
+    "row": {
+      "article_type": "tsa_01",
+      "is_review": 8795001,
+      "brand_id": 0,
+      "tag_ids": [
+        42,
+        8791005,
+        8791005
+      ],
+      "category_ids": [],
+      "mall_ids": [],
+      "pk": 10
+    },
+    "expected_input": "FALSE",
+    "expected_reduced": "FALSE"
+  },
+  {
+    "case": "excluded-tag-8791006",
+    "schema": "primary",
+    "row": {
+      "article_type": "tsa_01",
+      "is_review": 8795001,
+      "brand_id": 0,
+      "tag_ids": [
+        42,
+        8791006,
+        8791006
+      ],
+      "category_ids": [],
+      "mall_ids": [],
+      "pk": 11
+    },
+    "expected_input": "FALSE",
+    "expected_reduced": "FALSE"
+  },
+  {
+    "case": "excluded-tag-8791007",
+    "schema": "primary",
+    "row": {
+      "article_type": "tsa_01",
+      "is_review": 8795001,
+      "brand_id": 0,
+      "tag_ids": [
+        42,
+        8791007,
+        8791007
+      ],
+      "category_ids": [],
+      "mall_ids": [],
+      "pk": 12
+    },
+    "expected_input": "FALSE",
+    "expected_reduced": "FALSE"
+  },
+  {
+    "case": "excluded-tag-8791008",
+    "schema": "primary",
+    "row": {
+      "article_type": "tsa_01",
+      "is_review": 8795001,
+      "brand_id": 0,
+      "tag_ids": [
+        42,
+        8791008,
+        8791008
+      ],
+      "category_ids": [],
+      "mall_ids": [],
+      "pk": 13
+    },
+    "expected_input": "FALSE",
+    "expected_reduced": "FALSE"
+  },
+  {
+    "case": "excluded-tag-8791009",
+    "schema": "primary",
+    "row": {
+      "article_type": "tsa_01",
+      "is_review": 8795001,
+      "brand_id": 0,
+      "tag_ids": [
+        42,
+        8791009,
+        8791009
+      ],
+      "category_ids": [],
+      "mall_ids": [],
+      "pk": 14
+    },
+    "expected_input": "FALSE",
+    "expected_reduced": "FALSE"
+  },
+  {
+    "case": "review-miss",
+    "schema": "primary",
+    "row": {
+      "article_type": "tsa_01",
+      "is_review": 0,
+      "brand_id": 0,
+      "tag_ids": [],
+      "category_ids": [],
+      "mall_ids": [],
+      "pk": 15
+    },
+    "expected_input": "FALSE",
+    "expected_reduced": "FALSE"
+  },
+  {
+    "case": "brand-hit",
+    "schema": "primary",
+    "row": {
+      "article_type": "tsa_01",
+      "is_review": 8795001,
+      "brand_id": 8794001,
+      "tag_ids": [],
+      "category_ids": [],
+      "mall_ids": [],
+      "pk": 16
+    },
+    "expected_input": "FALSE",
+    "expected_reduced": "FALSE"
+  },
+  {
+    "case": "category-hit",
+    "schema": "primary",
+    "row": {
+      "article_type": "tsa_01",
+      "is_review": 8795001,
+      "brand_id": 0,
+      "tag_ids": [],
+      "category_ids": [
+        8792001
+      ],
+      "mall_ids": [],
+      "pk": 17
+    },
+    "expected_input": "FALSE",
+    "expected_reduced": "FALSE"
+  },
+  {
+    "case": "mall-hit",
+    "schema": "primary",
+    "row": {
+      "article_type": "tsa_01",
+      "is_review": 8795001,
+      "brand_id": 0,
+      "tag_ids": [],
+      "category_ids": [],
+      "mall_ids": [
+        8793001
+      ],
+      "pk": 18
+    },
+    "expected_input": "FALSE",
+    "expected_reduced": "FALSE"
+  },
+  {
+    "case": "null-is_review",
+    "schema": "primary",
+    "row": {
+      "article_type": "tsa_01",
+      "is_review": null,
+      "brand_id": 0,
+      "tag_ids": [],
+      "category_ids": [],
+      "mall_ids": [],
+      "pk": 19
+    },
+    "expected_input": "UNKNOWN",
+    "expected_reduced": "UNKNOWN"
+  },
+  {
+    "case": "null-brand_id",
+    "schema": "primary",
+    "row": {
+      "article_type": "tsa_01",
+      "is_review": 8795001,
+      "brand_id": null,
+      "tag_ids": [],
+      "category_ids": [],
+      "mall_ids": [],
+      "pk": 20
+    },
+    "expected_input": "UNKNOWN",
+    "expected_reduced": "UNKNOWN"
+  },
+  {
+    "case": "null-tag_ids",
+    "schema": "primary",
+    "row": {
+      "article_type": "tsa_01",
+      "is_review": 8795001,
+      "brand_id": 0,
+      "tag_ids": null,
+      "category_ids": [],
+      "mall_ids": [],
+      "pk": 21
+    },
+    "expected_input": "UNKNOWN",
+    "expected_reduced": "UNKNOWN"
+  },
+  {
+    "case": "null-category_ids",
+    "schema": "primary",
+    "row": {
+      "article_type": "tsa_01",
+      "is_review": 8795001,
+      "brand_id": 0,
+      "tag_ids": [],
+      "category_ids": null,
+      "mall_ids": [],
+      "pk": 22
+    },
+    "expected_input": "UNKNOWN",
+    "expected_reduced": "UNKNOWN"
+  },
+  {
+    "case": "null-mall_ids",
+    "schema": "primary",
+    "row": {
+      "article_type": "tsa_01",
+      "is_review": 8795001,
+      "brand_id": 0,
+      "tag_ids": [],
+      "category_ids": [],
+      "mall_ids": null,
+      "pk": 23
+    },
+    "expected_input": "UNKNOWN",
+    "expected_reduced": "UNKNOWN"
+  },
+  {
+    "case": "false-dominates-null",
+    "schema": "primary",
+    "row": {
+      "article_type": "tsa_04",
+      "is_review": 8795001,
+      "brand_id": 0,
+      "tag_ids": null,
+      "category_ids": [],
+      "mall_ids": [],
+      "pk": 24
+    },
+    "expected_input": "FALSE",
+    "expected_reduced": "FALSE"
+  },
+  {
+    "case": "nullable-empty",
+    "schema": "nullable-article",
+    "row": {
+      "article_type": null,
+      "is_review": 8795001,
+      "brand_id": 0,
+      "tag_ids": [],
+      "category_ids": [],
+      "mall_ids": [],
+      "pk": 25
+    },
+    "expected_input": "UNKNOWN",
+    "expected_reduced": "UNKNOWN"
+  },
+  {
+    "case": "nullable-guarded-tag",
+    "schema": "nullable-article",
+    "row": {
+      "article_type": null,
+      "is_review": 8795001,
+      "brand_id": 0,
+      "tag_ids": [
+        8791004
+      ],
+      "category_ids": [],
+      "mall_ids": [],
+      "pk": 26
+    },
+    "expected_input": "UNKNOWN",
+    "expected_reduced": "FALSE"
+  },
+  {
+    "case": "nullable-unconditional-tag",
+    "schema": "nullable-article",
+    "row": {
+      "article_type": null,
+      "is_review": 8795001,
+      "brand_id": 0,
+      "tag_ids": [
+        8791003
+      ],
+      "category_ids": [],
+      "mall_ids": [],
+      "pk": 27
+    },
+    "expected_input": "FALSE",
+    "expected_reduced": "FALSE"
+  }
+]

@@ -42,6 +42,8 @@ func (v *importer) importExpr(source *planpb.Expr) (expressions.Expression, erro
 	switch node := source.Expr.(type) {
 	case *planpb.Expr_AlwaysTrueExpr, *planpb.Expr_UnaryExpr, *planpb.Expr_BinaryExpr:
 		return v.importLogical(source)
+	case *planpb.Expr_JsonContainsExpr:
+		return v.importArrayMembership(node)
 	case *planpb.Expr_TermExpr:
 		return v.importTerm(node)
 	case *planpb.Expr_BinaryRangeExpr:

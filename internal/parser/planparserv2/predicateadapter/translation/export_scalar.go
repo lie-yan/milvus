@@ -13,11 +13,19 @@ import (
 // Allocates a scalar protobuf from the current immutable Value without evaluation or coercion.
 func exportScalar(graph expressions.Expression) (*planpb.GenericValue, error) {
 	literal, ok := graph.(*expressions.LiteralExpression)
-	if !ok || literal.Type().Nullability() != foundation.NonNull || literal.Value().IsNull() {
+	if !ok {
 		return nil, unsupportedExport("expected nonnull scalar literal")
 	}
+	return exportScalarValue(literal.Value())
+}
+
+// Copies one exact nonnull scalar payload, including array-literal elements.
+func exportScalarValue(value valueinterfaces.Value) (*planpb.GenericValue, error) {
+	if value.Type().Nullability() != foundation.NonNull || value.IsNull() {
+		return nil, unsupportedExport("expected nonnull scalar value")
+	}
 	result := &planpb.GenericValue{}
-	switch value := literal.Value().(type) {
+	switch value := value.(type) {
 	case valueinterfaces.BoolValue:
 		result.Val = &planpb.GenericValue_BoolVal{BoolVal: value.Bool()}
 	case valueinterfaces.IntegerValue:

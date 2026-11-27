@@ -36,14 +36,27 @@ func NewRuntime() (*Runtime, error) {
 	if err != nil {
 		return nil, err
 	}
-	return assembleRuntime(append(definitions, numeric...))
+	text, err := functions.VarCharComparisonDeclarations(boolNonNullType)
+	if err != nil {
+		return nil, err
+	}
+	arrays, err := functions.ArrayMembershipDefinitions(boolNonNullType, boolNonNullType, int8NonNullType, int16NonNullType, int32NonNullType, int64NonNullType, float32NonNullType, float64NonNullType)
+	if err != nil {
+		return nil, err
+	}
+	return assembleRuntime(append(append(definitions, numeric...), arrays...), text...)
 }
 
 // Registers declarations and binds placeholders before any complete bundle can escape.
-func assembleRuntime(definitions []functions.FunctionDefinition) (*Runtime, error) {
+func assembleRuntime(definitions []functions.FunctionDefinition, declarations ...functions.FunctionDeclaration) (*Runtime, error) {
 	builder := functions.NewFunctionCatalogBuilder()
 	for _, definition := range definitions {
 		if err := builder.Register(definition); err != nil {
+			return nil, err
+		}
+	}
+	for _, declaration := range declarations {
+		if err := builder.RegisterDeclaration(declaration); err != nil {
 			return nil, err
 		}
 	}
@@ -60,6 +73,12 @@ func assembleRuntime(definitions []functions.FunctionDefinition) (*Runtime, erro
 		metadata, err := catalog.Metadata(handle)
 		if err != nil {
 			return nil, err
+		}
+		if name, present := metadata.BuiltInName().Get(); present && (name == shared.BuiltInArrayContains || name == shared.BuiltInArrayContainsAny) {
+			if err := contextBuilder.BindImplementation(handle, emptyPipelineImplementation); err != nil {
+				return nil, err
+			}
+			continue
 		}
 		op, present := metadata.Operator().Get()
 		if _, supported := milvusComparison(op); !present || !supported {

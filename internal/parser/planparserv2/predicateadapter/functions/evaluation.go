@@ -23,7 +23,7 @@ func (b *implementationBindings) evaluate(handle functioninterfaces.FunctionHand
 	if err != nil {
 		return nil, err
 	}
-	metadata := entry.metadata
+	metadata := handle.(*functionHandle).metadata
 	if err := shared.ValidateCallSignature(metadata, signature); err != nil {
 		return nil, err
 	}

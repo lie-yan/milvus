@@ -117,7 +117,11 @@ func (v *importer) importTerm(node *planpb.Expr_TermExpr) (expressions.Expressio
 			return nil, err
 		}
 	}
-	graph, err := expressions.NewSpecialFormExpression(foundation.SpecialFormIn, owner.primitives.BoolNonNull, args)
+	resultType := owner.primitives.BoolNonNull
+	if field.Type().Nullability() == foundation.MayNull {
+		resultType = owner.primitives.BoolMayNull
+	}
+	graph, err := expressions.NewSpecialFormExpression(foundation.SpecialFormIn, resultType, args)
 	if err != nil {
 		return nil, newFailure(TranslationDefect, StageImport, err)
 	}

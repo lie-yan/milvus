@@ -31,8 +31,10 @@ type Translator struct {
 	primitives primitiveTypes
 }
 
-// Non-null descriptor associations needed during translation; the runtime retains the full set.
+// Descriptor associations needed during translation; the runtime retains the full set.
 type primitiveTypes struct {
+	BoolMayNull                                           *types.BoolType
+	Int64MayNull                                          *types.IntType
 	BoolNonNull                                           *types.BoolType
 	Int8NonNull, Int16NonNull, Int32NonNull, Int64NonNull *types.IntType
 	Float32NonNull, Float64NonNull                        *types.FloatType
@@ -60,6 +62,9 @@ func New(runtime Runtime, view *schema.View, primitives adapterruntime.Primitive
 	if integer.IntegerWidth() != types.Int64 || integer.Nullability() != foundation.NonNull || boolean.Nullability() != foundation.NonNull {
 		return nil, merr.WrapErrServiceInternalMsg("predicate translation: expected NonNull Int64/Bool descriptors")
 	}
+	if primitives.BoolMayNull == nil || primitives.BoolMayNull.Nullability() != foundation.MayNull || primitives.Int64MayNull == nil || primitives.Int64MayNull.IntegerWidth() != types.Int64 || primitives.Int64MayNull.Nullability() != foundation.MayNull {
+		return nil, merr.WrapErrServiceInternalMsg("predicate translation: expected nullable Int64/Bool descriptors")
+	}
 	// Every admitted numeric domain must retain its declared width and non-null Type.
 	for _, slot := range []struct {
 		typ   *types.IntType
@@ -83,7 +88,7 @@ func New(runtime Runtime, view *schema.View, primitives adapterruntime.Primitive
 		}
 	}
 	t := &Translator{runtime: runtime, factory: runtime.ValueFactory(), context: runtime.FunctionContext(), view: view, primitives: primitiveTypes{
-		BoolNonNull: boolean,
+		BoolNonNull: boolean, BoolMayNull: primitives.BoolMayNull, Int64MayNull: primitives.Int64MayNull,
 		Int8NonNull: primitives.Int8NonNull, Int16NonNull: primitives.Int16NonNull,
 		Int32NonNull: primitives.Int32NonNull, Int64NonNull: integer,
 		Float32NonNull: primitives.Float32NonNull, Float64NonNull: primitives.Float64NonNull,

@@ -13,6 +13,8 @@ type functionHandle struct {
 	catalog *FunctionCatalog
 	// Private canonical entry position, never a serialized identity.
 	index int
+	// Concrete implementation metadata, shared by fixed handles or materialized during resolution.
+	metadata *shared.FunctionMetadata
 }
 
 var _ functioninterfaces.FunctionHandle = (*functionHandle)(nil)
@@ -36,13 +38,13 @@ func (h *functionHandle) Name() string {
 	return h.catalog.entries[h.index].name.Name
 }
 
-// Shares the catalog's immutable implementation signature.
+// Returns the concrete bound implementation signature.
 func (h *functionHandle) Signature() *shared.FunctionSignature {
 	h.assertValid()
-	return h.catalog.entries[h.index].metadata.Signature()
+	return h.metadata.Signature()
 }
 
-// Compares snapshot and canonical entry identity, not wrapper addresses or names.
+// Compares owning catalog, canonical declaration and bound signature.
 func (h *functionHandle) EqualsTo(other functioninterfaces.FunctionHandle) bool {
 	h.assertValid()
 	assertions.NotNil(other)
@@ -51,16 +53,16 @@ func (h *functionHandle) EqualsTo(other functioninterfaces.FunctionHandle) bool 
 		return false
 	}
 	o.assertValid()
-	return h.catalog == o.catalog && h.index == o.index
+	return h.catalog == o.catalog && h.index == o.index && (h.metadata == o.metadata || sameSignature(h.Signature(), o.Signature()))
 }
 
 // Returns immutable implementation metadata after validating ownership and membership.
 func (c *FunctionCatalog) Metadata(handle functioninterfaces.FunctionHandle) (*shared.FunctionMetadata, error) {
-	entry, err := c.resolveEntry(handle)
+	_, err := c.resolveEntry(handle)
 	if err != nil {
 		return nil, err
 	}
-	return entry.metadata, nil
+	return handle.(*functionHandle).metadata, nil
 }
 
 // Distinguishes incompatible representations/snapshots from unknown entries in this snapshot.

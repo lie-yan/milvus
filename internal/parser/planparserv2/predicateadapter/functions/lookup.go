@@ -62,7 +62,7 @@ func (c *FunctionCatalog) assertLookupInputs(args []types.Type) {
 
 // Selects a unique binding among matching entries for every lookup route.
 func (c *FunctionCatalog) lookup(args []types.Type, overloads *overloadSet) (functioninterfaces.FunctionHandle, error) {
-	selected := -1
+	var selected *functionHandle
 	for _, index := range overloads.candidates(args) {
 		entry := c.entries[index]
 		check := shared.ProbeFunctionBinding(entry.metadata, args)
@@ -75,13 +75,38 @@ func (c *FunctionCatalog) lookup(args []types.Type, overloads *overloadSet) (fun
 			}
 			return nil, merr.Wrap(errors.Join(shared.ErrContractViolation, check.Err()), "predicateadapter: invalid catalog binding")
 		}
-		if selected >= 0 {
+		if selected != nil {
 			return nil, merr.Wrap(shared.ErrUnsupportedLookup, "predicateadapter: ambiguous function binding")
 		}
-		selected = index
+		selected = c.handleAt(index)
 	}
-	if selected < 0 {
+	if overloads != nil {
+		for _, index := range overloads.parameterized {
+			entry := c.entries[index]
+			if entry.declaration.Signature.ArgumentCount() != len(args) {
+				continue
+			}
+			metadata, err := entry.declaration.bind(args)
+			if err != nil {
+				if errors.Is(err, shared.ErrUnsupportedLookup) {
+					continue
+				}
+				return nil, err
+			}
+			if err := shared.CheckFunctionBinding(metadata, args); err != nil {
+				if errors.Is(err, shared.ErrUnsupportedLookup) {
+					continue
+				}
+				return nil, err
+			}
+			if selected != nil {
+				return nil, merr.Wrap(shared.ErrUnsupportedLookup, "predicateadapter: ambiguous function binding")
+			}
+			selected = &functionHandle{catalog: c, index: index, metadata: metadata}
+		}
+	}
+	if selected == nil {
 		return nil, merr.Wrap(shared.ErrUnsupportedLookup, "predicateadapter: no matching function binding")
 	}
-	return c.handleAt(selected), nil
+	return selected, nil
 }

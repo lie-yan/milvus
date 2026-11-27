@@ -116,6 +116,7 @@ type attemptControl struct {
 	Action    string
 }
 type attemptReceipt struct {
+	SourceUnchanged    bool `json:"source_unchanged"`
 	PID                int
 	IndependentContext bool `json:"independent_context"`
 	Outcome            orchestration.Outcome

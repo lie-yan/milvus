@@ -75,7 +75,7 @@ func (c *FunctionContext) IsComparisonFunction(handle functioninterfaces.Functio
 	return c.bindings.catalog.IsComparisonFunction(handle)
 }
 
-// Returns the original immutable metadata after catalog ownership validation.
+// Returns immutable bound implementation metadata after catalog ownership validation.
 func (c *FunctionContext) Metadata(handle functioninterfaces.FunctionHandle) (*shared.FunctionMetadata, error) {
 	assertions.NotNilPointer(c)
 	return c.bindings.catalog.Metadata(handle)

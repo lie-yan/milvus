@@ -18,32 +18,45 @@ import (
 
 func TestUnaryComparisonMappings(t *testing.T) {
 	ctx := context.Background()
-	for _, typ := range []schemapb.DataType{schemapb.DataType_Int64, schemapb.DataType_Bool} {
-		translator, null, _ := opaqueFixture(t, typ, false)
-		ops := []planpb.OpType{planpb.OpType_Equal, planpb.OpType_NotEqual}
-		values := []*planpb.GenericValue{{Val: &planpb.GenericValue_BoolVal{}}, {Val: &planpb.GenericValue_BoolVal{BoolVal: true}}}
-		if typ == schemapb.DataType_Int64 {
-			ops = append(ops, planpb.OpType_LessThan, planpb.OpType_LessEqual, planpb.OpType_GreaterThan, planpb.OpType_GreaterEqual)
-			values = []*planpb.GenericValue{integerSource(math.MinInt64), integerSource(math.MaxInt64), integerSource(9007199254740993), integerSource(0)}
-		}
-		for _, op := range ops {
-			for _, value := range values {
-				source := unarySource(null.GetNullExpr().ColumnInfo, op, value)
-				source.IsTemplate = true
-				source.GetUnaryRangeExpr().TemplateVariableName = "filled"
-				imported := importSource(t, translator, source)
-				call := imported.Root().(*expressions.CallExpression)
-				runtime, err := adapterruntime.SharedRuntime()
-				require.NoError(t, err)
-				recovered, err := runtime.ComparisonOperator(call.Handle())
-				require.NoError(t, err)
-				require.Equal(t, op, recovered)
-				require.IsType(t, &expressions.ReferenceExpression{}, call.ChildAt(0))
-				require.IsType(t, &expressions.LiteralExpression{}, call.ChildAt(1))
-				rebuilt := rebuiltCall(t, call, call.ChildAt(0), call.ChildAt(1))
-				output, err := translator.Export(ctx, imported, rebuilt)
-				require.NoError(t, err)
-				require.True(t, proto.Equal(expectedExport(source), output))
+	for _, tc := range []struct {
+		typ    schemapb.DataType
+		values []*planpb.GenericValue
+	}{
+		{schemapb.DataType_Bool, []*planpb.GenericValue{{Val: &planpb.GenericValue_BoolVal{}}, {Val: &planpb.GenericValue_BoolVal{BoolVal: true}}}},
+		{schemapb.DataType_Int8, []*planpb.GenericValue{integerSource(-128), integerSource(127)}},
+		{schemapb.DataType_Int16, []*planpb.GenericValue{integerSource(-32768), integerSource(32767)}},
+		{schemapb.DataType_Int32, []*planpb.GenericValue{integerSource(math.MinInt32), integerSource(math.MaxInt32)}},
+		{schemapb.DataType_Int64, []*planpb.GenericValue{integerSource(math.MinInt64), integerSource(math.MaxInt64), integerSource(9007199254740993), integerSource(0)}},
+		{schemapb.DataType_Float, []*planpb.GenericValue{floatSource(-math.MaxFloat32), floatSource(1.5)}},
+		{schemapb.DataType_Double, []*planpb.GenericValue{floatSource(-math.MaxFloat64), floatSource(math.Inf(1))}},
+	} {
+		for _, nullable := range []bool{false, true} {
+			translator, null, _ := opaqueFixture(t, tc.typ, nullable)
+			ops := []planpb.OpType{planpb.OpType_Equal, planpb.OpType_NotEqual}
+			if tc.typ != schemapb.DataType_Bool {
+				ops = append(ops, planpb.OpType_LessThan, planpb.OpType_LessEqual, planpb.OpType_GreaterThan, planpb.OpType_GreaterEqual)
+			}
+			for _, op := range ops {
+				for _, value := range tc.values {
+					source := unarySource(null.GetNullExpr().ColumnInfo, op, value)
+					source.IsTemplate = true
+					source.GetUnaryRangeExpr().TemplateVariableName = "filled"
+					imported := importSource(t, translator, source)
+					call := imported.Root().(*expressions.CallExpression)
+					require.Equal(t, call.ChildAt(0).Type().Nullability(), call.Type().Nullability())
+					require.Equal(t, foundation.NonNull, call.ChildAt(1).Type().Nullability())
+					runtime, err := adapterruntime.SharedRuntime()
+					require.NoError(t, err)
+					recovered, err := runtime.ComparisonOperator(call.Handle())
+					require.NoError(t, err)
+					require.Equal(t, op, recovered)
+					require.IsType(t, &expressions.ReferenceExpression{}, call.ChildAt(0))
+					require.IsType(t, &expressions.LiteralExpression{}, call.ChildAt(1))
+					rebuilt := rebuiltCall(t, call, call.ChildAt(0), call.ChildAt(1))
+					output, err := translator.Export(ctx, imported, rebuilt)
+					require.NoError(t, err)
+					require.True(t, proto.Equal(expectedExport(source), output))
+				}
 			}
 		}
 	}
@@ -115,8 +128,6 @@ func TestUnaryComparisonImportCoverage(t *testing.T) {
 		value    *planpb.GenericValue
 	}{
 		{schemapb.DataType_Int8, false, planpb.OpType_GreaterThan, integerSource(300)},
-		{schemapb.DataType_Double, false, planpb.OpType_Equal, &planpb.GenericValue{Val: &planpb.GenericValue_FloatVal{FloatVal: 1}}},
-		{schemapb.DataType_Int64, true, planpb.OpType_Equal, integerSource(0)},
 		{schemapb.DataType_Bool, false, planpb.OpType_LessThan, &planpb.GenericValue{Val: &planpb.GenericValue_BoolVal{}}},
 	} {
 		translator, null, _ := opaqueFixture(t, tc.typ, tc.nullable)

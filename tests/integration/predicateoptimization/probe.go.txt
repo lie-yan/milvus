@@ -48,7 +48,8 @@ func probeRoundTrip(ctx context.Context, input orchestration.AttemptInput, valid
 	if selected.Action == "unsafe" {
 		input.Original = &planpb.Expr{}
 	}
+	before := proto.Clone(input.Original)
 	result, err := orchestration.RoundTrip(ctx, input, validate)
-	publish("completed.json", map[string]any{"pid": os.Getpid(), "outcome": result.Outcome(), "abort": orchestration.IsAdapterAbort(err), "code": merr.Code(err)})
+	publish("completed.json", map[string]any{"pid": os.Getpid(), "outcome": result.Outcome(), "abort": orchestration.IsAdapterAbort(err), "code": merr.Code(err), "source_unchanged": proto.Equal(before, input.Original)})
 	return result, err
 }

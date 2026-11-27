@@ -37,12 +37,14 @@ type FunctionCatalog struct {
 
 // Canonical semantic record shared within one snapshot.
 type functionEntry struct {
-	// Stable implementation identity initialized before catalog publication.
+	// Shared fixed-definition handle initialized before catalog publication.
 	handle functionHandle
 	// Qualified declaration identity.
 	name FunctionName
-	// Immutable implementation semantics; the first diagnostic label wins.
+	// Concrete metadata for fixed declarations; nil for parameterized declarations.
 	metadata *shared.FunctionMetadata
+	// Canonical declaration and execution properties, independent of bound Types.
+	declaration FunctionDeclaration
 }
 
 // Sequential registration owner; successful Build consumes all copies of the builder.
@@ -72,17 +74,11 @@ func (b *FunctionCatalogBuilder) Register(def FunctionDefinition) error {
 	if def.Name.Namespace == "" || def.Name.Name == "" || def.Metadata == nil || def.Metadata.Signature() == nil {
 		return merr.WrapErrServiceInternalMsg("predicateadapter: invalid function registration")
 	}
-	for _, existing := range b.state.entries {
-		if existing.name != def.Name || !sameSignature(existing.metadata.Signature(), def.Metadata.Signature()) {
-			continue
-		}
-		if !sameProperties(existing.metadata, def.Metadata) {
-			return merr.WrapErrServiceInternalMsg("predicateadapter: conflicting function registration for %s.%s", def.Name.Namespace, def.Name.Name)
-		}
-		return nil
-	}
-	b.state.entries = append(b.state.entries, &functionEntry{name: def.Name, metadata: def.Metadata})
-	return nil
+	return b.register(FunctionDeclaration{
+		Name: def.Name, Signature: shared.DeclarationFromSignature(def.Metadata.Signature()),
+		DisplayName: def.Metadata.DisplayName(), BuiltInName: def.Metadata.BuiltInName(),
+		Operator: def.Metadata.Operator(), NullPolicies: def.Metadata.NullPolicies(),
+	}, def.Metadata)
 }
 
 // Publishes a complete immutable snapshot and relinquishes the builder's entries.
@@ -96,14 +92,13 @@ func (b *FunctionCatalogBuilder) Build() (*FunctionCatalog, error) {
 		byOperator: make(map[foundation.OperatorType]*overloadSet),
 	}
 	for i, entry := range catalog.entries {
-		entry.handle = functionHandle{catalog: catalog, index: i}
-		args := entry.metadata.Signature().ArgumentTypes()
-		addOverload(catalog.byName, entry.name, i, args)
-		if name, present := entry.metadata.BuiltInName().Get(); present {
-			addOverload(catalog.byBuiltIn, name, i, args)
+		entry.handle = functionHandle{catalog: catalog, index: i, metadata: entry.metadata}
+		addDeclaration(catalog.byName, entry.name, i, entry)
+		if name, present := entry.declaration.BuiltInName.Get(); present {
+			addDeclaration(catalog.byBuiltIn, name, i, entry)
 		}
-		if op, present := entry.metadata.Operator().Get(); present {
-			addOverload(catalog.byOperator, op, i, args)
+		if op, present := entry.declaration.Operator.Get(); present {
+			addDeclaration(catalog.byOperator, op, i, entry)
 		}
 	}
 	b.state.entries = nil
@@ -126,19 +121,6 @@ func sameSignature(a, b *shared.FunctionSignature) bool {
 	}
 	for i := 0; i < a.ArgumentCount(); i++ {
 		if !a.ArgumentTypeAt(i).EqualsTo(b.ArgumentTypeAt(i)) {
-			return false
-		}
-	}
-	return true
-}
-
-// Compares semantic classifications and null policies, excluding diagnostic labels.
-func sameProperties(a, b *shared.FunctionMetadata) bool {
-	if a.Operator() != b.Operator() || a.BuiltInName() != b.BuiltInName() {
-		return false
-	}
-	for i := 0; i < a.Signature().ArgumentCount(); i++ {
-		if a.NullPolicyAt(i) != b.NullPolicyAt(i) {
 			return false
 		}
 	}

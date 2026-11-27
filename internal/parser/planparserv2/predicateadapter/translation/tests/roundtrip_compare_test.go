@@ -46,33 +46,35 @@ func compareFixture(t *testing.T, left, right schemapb.DataType, nullable bool) 
 
 func TestFieldComparisonMappings(t *testing.T) {
 	ctx := context.Background()
-	for _, typ := range []schemapb.DataType{schemapb.DataType_Bool, schemapb.DataType_Int8, schemapb.DataType_Int16, schemapb.DataType_Int32, schemapb.DataType_Int64, schemapb.DataType_Float, schemapb.DataType_Double} {
-		t.Run(typ.String(), func(t *testing.T) {
-			translator, source := compareFixture(t, typ, typ, false)
-			ops := []planpb.OpType{planpb.OpType_Equal, planpb.OpType_NotEqual}
-			if typ != schemapb.DataType_Bool {
-				ops = append(ops, planpb.OpType_LessThan, planpb.OpType_LessEqual, planpb.OpType_GreaterThan, planpb.OpType_GreaterEqual)
-			}
-			for _, op := range ops {
-				source.GetCompareExpr().Op = op
-				for _, same := range []bool{false, true} {
-					input := proto.Clone(source).(*planpb.Expr)
-					if same {
-						input.GetCompareExpr().RightColumnInfo = proto.Clone(input.GetCompareExpr().LeftColumnInfo).(*planpb.ColumnInfo)
-					}
-					imported := importSource(t, translator, input)
-					call := imported.Root().(*expressions.CallExpression)
-					left := call.ChildAt(0).(*expressions.ReferenceExpression)
-					right := call.ChildAt(1).(*expressions.ReferenceExpression)
-					require.Equal(t, same, left.ID().EqualsTo(right.ID()))
-					// Same-field floating predicates must stay calls, including equality and inequality.
-					rebuilt := rebuiltCall(t, call, left, right)
-					output, err := translator.Export(ctx, imported, rebuilt)
-					require.NoError(t, err)
-					require.True(t, proto.Equal(expectedExport(input), output))
+	for _, typ := range []schemapb.DataType{schemapb.DataType_Bool, schemapb.DataType_Int8, schemapb.DataType_Int16, schemapb.DataType_Int32, schemapb.DataType_Int64, schemapb.DataType_Float, schemapb.DataType_Double, schemapb.DataType_VarChar} {
+		for _, nullable := range []bool{false, true} {
+			t.Run(typ.String(), func(t *testing.T) {
+				translator, source := compareFixture(t, typ, typ, nullable)
+				ops := []planpb.OpType{planpb.OpType_Equal, planpb.OpType_NotEqual}
+				if typ != schemapb.DataType_Bool && typ != schemapb.DataType_VarChar {
+					ops = append(ops, planpb.OpType_LessThan, planpb.OpType_LessEqual, planpb.OpType_GreaterThan, planpb.OpType_GreaterEqual)
 				}
-			}
-		})
+				for _, op := range ops {
+					source.GetCompareExpr().Op = op
+					for _, same := range []bool{false, true} {
+						input := proto.Clone(source).(*planpb.Expr)
+						if same {
+							input.GetCompareExpr().RightColumnInfo = proto.Clone(input.GetCompareExpr().LeftColumnInfo).(*planpb.ColumnInfo)
+						}
+						imported := importSource(t, translator, input)
+						call := imported.Root().(*expressions.CallExpression)
+						left := call.ChildAt(0).(*expressions.ReferenceExpression)
+						right := call.ChildAt(1).(*expressions.ReferenceExpression)
+						require.Equal(t, same, left.ID().EqualsTo(right.ID()))
+						// Same-field floating predicates must stay calls, including equality and inequality.
+						rebuilt := rebuiltCall(t, call, left, right)
+						output, err := translator.Export(ctx, imported, rebuilt)
+						require.NoError(t, err)
+						require.True(t, proto.Equal(expectedExport(input), output))
+					}
+				}
+			})
+		}
 	}
 }
 
@@ -85,8 +87,6 @@ func TestFieldComparisonImportCoverage(t *testing.T) {
 		{schemapb.DataType_Int64, schemapb.DataType_Int8, false},
 		{schemapb.DataType_Float, schemapb.DataType_Double, false},
 		{schemapb.DataType_Int64, schemapb.DataType_Double, false},
-		{schemapb.DataType_VarChar, schemapb.DataType_VarChar, false},
-		{schemapb.DataType_Int64, schemapb.DataType_Int64, true},
 	} {
 		translator, source := compareFixture(t, tc.left, tc.right, tc.nullable)
 		imported, err := translator.Import(context.Background(), source)
