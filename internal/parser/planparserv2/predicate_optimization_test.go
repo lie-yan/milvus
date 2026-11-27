@@ -49,7 +49,7 @@ func TestPredicateOptimizationPostLegacyHook(t *testing.T) {
 	helper, err := typeutil.CreateSchemaHelper(schema)
 	require.NoError(t, err)
 	evaluations := mockey.Mock((*adapterfunctions.FunctionContext).Evaluate).To(func(*adapterfunctions.FunctionContext, functioninterfaces.FunctionHandle, *shared.FunctionSignature, []valueinterfaces.Value) (valueinterfaces.Value, error) {
-		t.Fatal("empty pipeline evaluated a function")
+		t.Fatal("rewrite pipeline evaluated a function")
 		return nil, merr.ErrServiceInternal
 	}).Build()
 	defer evaluations.UnPatch()
@@ -84,7 +84,27 @@ func TestPredicateOptimizationPostLegacyHook(t *testing.T) {
 			got, err := parseExprInner(helper, source, nil, &ParserVisitorArgs{OnParsedExpr: func(*planpb.Expr) { observations++ }})
 			require.NoError(t, err)
 			require.Equal(t, 1, attempts)
-			require.True(t, proto.Equal(legacy, got))
+			expected := legacy
+			if interval := legacy.GetBinaryRangeExpr(); interval != nil {
+				// Export reconstructs executable comparisons instead of preserving range syntax.
+				lower, upper := planpb.OpType_GreaterThan, planpb.OpType_LessThan
+				if interval.LowerInclusive {
+					lower = planpb.OpType_GreaterEqual
+				}
+				if interval.UpperInclusive {
+					upper = planpb.OpType_LessEqual
+				}
+				expected = &planpb.Expr{Expr: &planpb.Expr_BinaryExpr{BinaryExpr: &planpb.BinaryExpr{
+					Op: planpb.BinaryExpr_LogicalAnd,
+					Left: &planpb.Expr{Expr: &planpb.Expr_UnaryRangeExpr{UnaryRangeExpr: &planpb.UnaryRangeExpr{
+						ColumnInfo: interval.ColumnInfo, Op: lower, Value: interval.LowerValue,
+					}}},
+					Right: &planpb.Expr{Expr: &planpb.Expr_UnaryRangeExpr{UnaryRangeExpr: &planpb.UnaryRangeExpr{
+						ColumnInfo: interval.ColumnInfo, Op: upper, Value: interval.UpperValue,
+					}}},
+				}}}
+			}
+			require.True(t, proto.Equal(expected, got))
 			require.NotSame(t, borrowed, got)
 			require.True(t, proto.Equal(before, borrowed))
 		})
