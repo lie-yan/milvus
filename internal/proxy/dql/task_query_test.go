@@ -2201,7 +2201,7 @@ func TestPredicateOptimizationRetrieveCallers(t *testing.T) {
 						}
 						calls := 0
 						var run func(context.Context, orchestration.AttemptInput, func(*planpb.Expr) error) (orchestration.AttemptResult, error)
-						patch := mockey.Mock(orchestration.RoundTrip).Origin(&run).To(func(ctx context.Context, in orchestration.AttemptInput, validate func(*planpb.Expr) error) (orchestration.AttemptResult, error) {
+						patch := mockey.Mock(orchestration.Optimize).Origin(&run).To(func(ctx context.Context, in orchestration.AttemptInput, validate func(*planpb.Expr) error) (orchestration.AttemptResult, error) {
 							calls++
 							before := proto.Clone(in.Original)
 							result, err := run(ctx, in, validate)
@@ -2247,7 +2247,14 @@ func TestPredicateOptimizationRetrieveCallers(t *testing.T) {
 						if !enabled {
 							legacy = proto.Clone(plan).(*planpb.PlanNode)
 						} else {
-							require.True(t, proto.Equal(legacy, plan), "empty pipeline must preserve the complete retrieve plan")
+							expected := proto.Clone(legacy).(*planpb.PlanNode)
+							if mode == "translated" && input == "pk > {threshold}" && caller != "prebuilt" {
+								// Executable export drops resolved template bookkeeping.
+								predicate := expected.GetQuery().GetPredicates()
+								predicate.IsTemplate = false
+								predicate.GetUnaryRangeExpr().TemplateVariableName = ""
+							}
+							require.True(t, proto.Equal(expected, plan), "these stable predicates must preserve the complete executable retrieve plan")
 						}
 						bytes, _, err := MarshalPlanWithMembershipFilterSizeLimit(plan, 0)
 						require.NoError(t, err)
@@ -2279,7 +2286,7 @@ func TestPredicateOptimizationRetrieveCancellation(t *testing.T) {
 	requestCtx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	var run func(context.Context, orchestration.AttemptInput, func(*planpb.Expr) error) (orchestration.AttemptResult, error)
-	patch := mockey.Mock(orchestration.RoundTrip).Origin(&run).To(func(ctx context.Context, in orchestration.AttemptInput, validate func(*planpb.Expr) error) (orchestration.AttemptResult, error) {
+	patch := mockey.Mock(orchestration.Optimize).Origin(&run).To(func(ctx context.Context, in orchestration.AttemptInput, validate func(*planpb.Expr) error) (orchestration.AttemptResult, error) {
 		cancel()
 		require.Nil(t, ctx.Done())
 		result, err := run(ctx, in, validate)

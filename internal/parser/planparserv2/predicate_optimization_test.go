@@ -111,6 +111,8 @@ func TestPredicateOptimizationBypassAndOriginalErrors(t *testing.T) {
 	_, err := ParseExpr(helper, "Int64Field > 7", nil)
 	require.NoError(t, err)
 	require.NoError(t, params.Save(key, "true"))
+	_, err = ParseExprTemplate(helper, "Int64Field > {threshold}", nil)
+	require.NoError(t, err, "template-only parsing must not acquire adapter state")
 	for _, source := range []string{"", " \t\n"} {
 		got, err := parseExprInner(helper, source, nil, nil)
 		require.NoError(t, err)
@@ -124,6 +126,82 @@ func TestPredicateOptimizationBypassAndOriginalErrors(t *testing.T) {
 	_, err = parseExprInner(helper, "Int64Field > 7", nil, nil)
 	require.ErrorIs(t, err, merr.ErrQueryPlan)
 	require.False(t, integration.IsFailure(err))
+}
+
+func TestPredicateOptimizationCallerRetention(t *testing.T) {
+	enablePredicateOptimization(t)
+	helper := newTestSchemaHelper(t)
+	for _, caller := range []string{"retrieve", "search", "scorer"} {
+		for _, fault := range []string{"unsupported", "export", "validation"} {
+			t.Run(caller+"/"+fault, func(t *testing.T) {
+				source := "Int64Field > 7"
+				if fault == "unsupported" {
+					source = "Int64Field + 1 > 7"
+				}
+				if fault == "export" {
+					var export func(*translation.Translator, context.Context, *translation.ImportResult, expressions.Expression) (*planpb.Expr, error)
+					patch := mockey.Mock((*translation.Translator).Export).Origin(&export).To(func(tr *translation.Translator, ctx context.Context, _ *translation.ImportResult, root expressions.Expression) (*planpb.Expr, error) {
+						return export(tr, ctx, nil, root) // A real classified export-state defect.
+					}).Build()
+					defer patch.UnPatch()
+				}
+				var original *planpb.Expr
+				attempts, validations := 0, 0
+				var run func(context.Context, orchestration.AttemptInput, func(*planpb.Expr) error) (orchestration.AttemptResult, error)
+				observe := mockey.Mock(orchestration.Optimize).Origin(&run).To(func(ctx context.Context, in orchestration.AttemptInput, validate func(*planpb.Expr) error) (orchestration.AttemptResult, error) {
+					attempts++
+					original = in.Original
+					before := proto.Clone(original)
+					result, err := run(ctx, in, func(candidate *planpb.Expr) error {
+						validations++
+						require.NotSame(t, original, candidate)
+						require.NoError(t, validate(candidate))
+						return merr.ErrServiceInternal
+					})
+					require.NoError(t, err)
+					require.True(t, proto.Equal(before, original), "a failed attempt must not mutate the borrowed source")
+					require.Nil(t, result.Candidate())
+					if fault == "unsupported" {
+						require.Equal(t, orchestration.OutcomeUnsupported, result.Outcome())
+						require.Equal(t, orchestration.StageImport, result.Report().Stage)
+					} else {
+						require.Equal(t, orchestration.OutcomeRetainedAfterFailure, result.Outcome())
+						require.ErrorIs(t, result.Report().Cause, merr.ErrServiceInternal)
+						stage := orchestration.StageExport
+						if fault == "validation" {
+							stage = orchestration.StageValidate
+						}
+						require.Equal(t, stage, result.Report().Stage)
+					}
+					return result, err
+				}).Build()
+				defer observe.UnPatch()
+				var got *planpb.Expr
+				switch caller {
+				case "retrieve":
+					plan, err := CreateRetrievePlan(helper, source, nil)
+					require.NoError(t, err)
+					got = plan.GetQuery().GetPredicates()
+				case "search":
+					plan, err := CreateSearchPlan(helper, source, "FloatVectorField", &planpb.QueryInfo{GroupByFieldId: -1}, nil, nil)
+					require.NoError(t, err)
+					got = plan.GetVectorAnns().GetPredicates()
+				case "scorer":
+					score := &schemapb.FunctionScore{Functions: []*schemapb.FunctionSchema{{Type: schemapb.FunctionType_Rerank, Params: []*commonpb.KeyValuePair{{Key: "reranker", Value: "boost"}, {Key: "filter", Value: source}, {Key: "weight", Value: "2"}}}}}
+					plan, err := CreateSearchPlan(helper, "", "FloatVectorField", &planpb.QueryInfo{GroupByFieldId: -1}, nil, score)
+					require.NoError(t, err)
+					got = plan.GetScorers()[0].GetFilter()
+				}
+				require.Equal(t, 1, attempts)
+				require.Same(t, original, got, "the caller must receive the retained original, not a partial candidate")
+				if fault == "validation" {
+					require.Equal(t, 1, validations)
+				} else {
+					require.Zero(t, validations)
+				}
+			})
+		}
+	}
 }
 
 func TestPredicateOptimizationMembershipAccounting(t *testing.T) {

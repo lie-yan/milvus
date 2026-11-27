@@ -8234,7 +8234,7 @@ func TestPredicateOptimizationSearchCallers(t *testing.T) {
 						require.NoError(t, params.Save(item.Key, strconv.FormatBool(enabled)))
 						var observed []orchestration.Outcome
 						var run func(context.Context, orchestration.AttemptInput, func(*planpb.Expr) error) (orchestration.AttemptResult, error)
-						patch := mockey.Mock(orchestration.RoundTrip).Origin(&run).To(func(ctx context.Context, in orchestration.AttemptInput, validate func(*planpb.Expr) error) (orchestration.AttemptResult, error) {
+						patch := mockey.Mock(orchestration.Optimize).Origin(&run).To(func(ctx context.Context, in orchestration.AttemptInput, validate func(*planpb.Expr) error) (orchestration.AttemptResult, error) {
 							before := proto.Clone(in.Original)
 							result, err := run(ctx, in, validate)
 							require.NoError(t, err)
@@ -8286,7 +8286,14 @@ func TestPredicateOptimizationSearchCallers(t *testing.T) {
 						} else {
 							require.Len(t, plans, len(legacy))
 							for i := range plans {
-								require.True(t, proto.Equal(legacy[i], plans[i]), "empty pipeline must preserve main/scorer plans")
+								expected := proto.Clone(legacy[i]).(*planpb.PlanNode)
+								if i == 0 && tc.main == "pk > {threshold}" {
+									// Executable export drops resolved template bookkeeping.
+									predicate := expected.GetVectorAnns().GetPredicates()
+									predicate.IsTemplate = false
+									predicate.GetUnaryRangeExpr().TemplateVariableName = ""
+								}
+								require.True(t, proto.Equal(expected, plans[i]), "these stable predicates must preserve executable main/scorer plans")
 							}
 						}
 					})
