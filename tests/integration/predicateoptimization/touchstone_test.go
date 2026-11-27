@@ -72,7 +72,7 @@ func (s *EmptyPipelineSuite) touchstoneExecutionParity(optimized bool) {
 				}
 			}
 		}
-		inserted, err := c.Insert(ctx, &milvuspb.InsertRequest{CollectionName: name, FieldsData: touchstoneFields(rows, nullableArticle), NumRows: uint32(len(rows)), HashKeys: integration.GenerateHashKeys(len(rows))})
+		inserted, err := c.Insert(ctx, &milvuspb.InsertRequest{CollectionName: name, FieldsData: touchstone.Fields(rows, nullableArticle), NumRows: uint32(len(rows)), HashKeys: integration.GenerateHashKeys(len(rows))})
 		r.NoError(merr.CheckRPCCall(inserted, err))
 		flushed, err := c.Flush(ctx, &milvuspb.FlushRequest{CollectionNames: []string{name}})
 		r.NoError(merr.CheckRPCCall(flushed, err))
@@ -168,50 +168,4 @@ func (s *EmptyPipelineSuite) touchstoneQuery(ctx context.Context, name string, s
 	ids := append([]int64{}, result.GetFieldsData()[0].GetScalars().GetLongData().GetData()...)
 	sort.Slice(ids, func(i, j int) bool { return ids[i] < ids[j] })
 	return ids
-}
-
-// Uses compact nullable payloads while retaining empty arrays as valid rows.
-func touchstoneFields(rows []touchstone.Row, nullableArticle bool) []*schemapb.FieldData {
-	var pks, reviews, brands []int64
-	var articles []string
-	var vectors []float32
-	articleValid, reviewValid, brandValid := make([]bool, len(rows)), make([]bool, len(rows)), make([]bool, len(rows))
-	arrayData := []*schemapb.ArrayArray{{ElementType: schemapb.DataType_Int64}, {ElementType: schemapb.DataType_Int64}, {ElementType: schemapb.DataType_Int64}}
-	arrayValid := [][]bool{make([]bool, len(rows)), make([]bool, len(rows)), make([]bool, len(rows))}
-	for i, row := range rows {
-		pks = append(pks, row.PK)
-		vectors = append(vectors, 1, 0)
-		if row.Article != nil {
-			articles = append(articles, *row.Article)
-			articleValid[i] = true
-		}
-		if row.Review != nil {
-			reviews = append(reviews, *row.Review)
-			reviewValid[i] = true
-		}
-		if row.Brand != nil {
-			brands = append(brands, *row.Brand)
-			brandValid[i] = true
-		}
-		for j, values := range [][]int64{row.Tags, row.Categories, row.Malls} {
-			if values != nil {
-				arrayValid[j][i] = true
-				arrayData[j].Data = append(arrayData[j].Data, &schemapb.ScalarField{Data: &schemapb.ScalarField_LongData{LongData: &schemapb.LongArray{Data: values}}})
-			}
-		}
-	}
-	if !nullableArticle {
-		articleValid = nil
-	}
-	fields := []*schemapb.FieldData{
-		{FieldName: "pk", Type: schemapb.DataType_Int64, Field: &schemapb.FieldData_Scalars{Scalars: &schemapb.ScalarField{Data: &schemapb.ScalarField_LongData{LongData: &schemapb.LongArray{Data: pks}}}}},
-		{FieldName: "article_type", Type: schemapb.DataType_VarChar, ValidData: articleValid, Field: &schemapb.FieldData_Scalars{Scalars: &schemapb.ScalarField{Data: &schemapb.ScalarField_StringData{StringData: &schemapb.StringArray{Data: articles}}}}},
-		{FieldName: "is_review", Type: schemapb.DataType_Int64, ValidData: reviewValid, Field: &schemapb.FieldData_Scalars{Scalars: &schemapb.ScalarField{Data: &schemapb.ScalarField_LongData{LongData: &schemapb.LongArray{Data: reviews}}}}},
-		{FieldName: "brand_id", Type: schemapb.DataType_Int64, ValidData: brandValid, Field: &schemapb.FieldData_Scalars{Scalars: &schemapb.ScalarField{Data: &schemapb.ScalarField_LongData{LongData: &schemapb.LongArray{Data: brands}}}}},
-		{FieldName: "vector", Type: schemapb.DataType_FloatVector, Field: &schemapb.FieldData_Vectors{Vectors: &schemapb.VectorField{Dim: 2, Data: &schemapb.VectorField_FloatVector{FloatVector: &schemapb.FloatArray{Data: vectors}}}}},
-	}
-	for i, name := range []string{"tag_ids", "category_ids", "mall_ids"} {
-		fields = append(fields, &schemapb.FieldData{FieldName: name, Type: schemapb.DataType_Array, ValidData: arrayValid[i], Field: &schemapb.FieldData_Scalars{Scalars: &schemapb.ScalarField{Data: &schemapb.ScalarField_ArrayData{ArrayData: arrayData[i]}}}})
-	}
-	return fields
 }
