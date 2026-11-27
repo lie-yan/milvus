@@ -6,6 +6,7 @@ import (
 
 	"github.com/bytedance/mockey"
 	"github.com/cockroachdb/errors"
+	"github.com/lie-yan/predicate-optimization/expressions"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
@@ -1361,6 +1362,99 @@ func TestPredicateOptimizationDeleteRoutingAndSafety(t *testing.T) {
 				} else {
 					require.Equal(t, "query", route)
 				}
+			})
+		}
+	}
+}
+
+// Distinguishes safe export retention from an abort before delete execution is set up.
+func (s *DeleteRunnerSuite) TestPredicateOptimizationExportFailure() {
+	params := paramtable.Get()
+	item := &params.ProxyCfg.EnablePredicateOptimization
+	previous := item.GetValue()
+	s.Require().NoError(params.Save(item.Key, "true"))
+	defer params.Save(item.Key, previous)
+	for _, source := range []string{"pk in [1, 2]", "non_pk > 7"} {
+		for _, abort := range []bool{false, true} {
+			name := "retained/"
+			if abort {
+				name = "abort/"
+			}
+			s.Run(name+source, func() {
+				r := s.Require()
+				schema := proto.Clone(s.schema.CollectionSchema).(*schemapb.CollectionSchema)
+				schema.Fields[1].IsPartitionKey = false
+				s.schema = mustNewSchemaInfo(schema)
+				s.mockCache.EXPECT().GetDatabaseInfo(mock.Anything, mock.Anything).Return(&databaseInfo{DBID: 0}, nil)
+				s.mockCache.EXPECT().GetCollectionID(mock.Anything, mock.Anything, mock.Anything).Return(s.collectionID, nil)
+				s.mockCache.EXPECT().GetCollectionInfo(mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(deleteCollectionInfo(s.schema), nil)
+				var export func(*translation.Translator, context.Context, *translation.ImportResult, expressions.Expression) (*planpb.Expr, error)
+				fault := mockey.Mock((*translation.Translator).Export).Origin(&export).To(func(tr *translation.Translator, ctx context.Context, _ *translation.ImportResult, root expressions.Expression) (*planpb.Expr, error) {
+					if abort {
+						return nil, merr.ErrServiceUnavailable
+					}
+					return export(tr, ctx, nil, root) // Real classified TranslationDefect from checkOwner.
+				}).Build()
+				defer fault.UnPatch()
+				var original *planpb.Expr
+				attempts := 0
+				var optimize func(context.Context, orchestration.AttemptInput, func(*planpb.Expr) error) (orchestration.AttemptResult, error)
+				observer := mockey.Mock(orchestration.Optimize).Origin(&optimize).To(func(ctx context.Context, in orchestration.AttemptInput, validate func(*planpb.Expr) error) (orchestration.AttemptResult, error) {
+					attempts++
+					original = in.Original
+					before := proto.Clone(original)
+					result, err := optimize(ctx, in, func(candidate *planpb.Expr) error {
+						s.T().Fatal("failed export must not reach candidate validation")
+						return nil
+					})
+					r.True(proto.Equal(before, original))
+					r.Nil(result.Candidate())
+					if abort {
+						r.ErrorIs(err, merr.ErrServiceUnavailable)
+						r.True(orchestration.IsAdapterAbort(err))
+					} else {
+						r.NoError(err)
+						r.Equal(orchestration.OutcomeRetainedAfterFailure, result.Outcome())
+						r.Equal(orchestration.StageExport, result.Report().Stage)
+						r.ErrorIs(result.Report().Cause, merr.ErrServiceInternal)
+					}
+					return result, err
+				}).Build()
+				defer observer.UnPatch()
+				dr := &DeleteRunner{metaCache: s.mockCache, req: &milvuspb.DeleteRequest{CollectionName: s.collectionName, Expr: source}}
+				err := dr.Init(context.Background())
+				r.Equal(1, attempts)
+				if abort {
+					r.ErrorIs(err, merr.ErrServiceUnavailable)
+					r.True(predopt.IsFailure(err))
+					r.Nil(dr.plan)
+					r.Nil(dr.result)
+					status := merr.Status(err) // Same projection used by Proxy.Delete on Init failure.
+					r.Equal(merr.Code(merr.ErrServiceUnavailable), status.GetCode())
+					r.NotEqual("true", status.GetExtraInfo()[merr.InputErrorFlagKey])
+					r.True(status.GetRetriable())
+					return
+				}
+				r.NoError(err)
+				r.Same(original, dr.plan.GetQuery().GetPredicates())
+				calls := 0
+				simple := mockey.Mock((*DeleteRunner).simpleDelete).To(func(_ *DeleteRunner, _ context.Context, ids *schemapb.IDs, n int64) error {
+					calls++
+					r.Equal("pk in [1, 2]", source)
+					r.Equal([]int64{1, 2}, ids.GetIntId().GetData())
+					r.Equal(int64(2), n)
+					return nil
+				}).Build()
+				defer simple.UnPatch()
+				complex := mockey.Mock((*DeleteRunner).complexDelete).To(func(got *DeleteRunner, _ context.Context) error {
+					calls++
+					r.Equal("non_pk > 7", source)
+					r.Same(original, got.plan.GetQuery().GetPredicates())
+					return nil
+				}).Build()
+				defer complex.UnPatch()
+				r.NoError(dr.Run(context.Background()))
+				r.Equal(1, calls)
 			})
 		}
 	}
