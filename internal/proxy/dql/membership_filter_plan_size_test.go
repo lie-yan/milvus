@@ -32,6 +32,7 @@ import (
 	"github.com/milvus-io/milvus/client/v3/membership/sbbf"
 	"github.com/milvus-io/milvus/internal/parser/planparserv2"
 	predopt "github.com/milvus-io/milvus/internal/parser/planparserv2/predicateadapter/integration"
+	"github.com/milvus-io/milvus/internal/parser/planparserv2/predicateadapter/tests/touchstone"
 	"github.com/milvus-io/milvus/internal/parser/planparserv2/predicateadapter/translation"
 	"github.com/milvus-io/milvus/internal/proxy/metacache"
 	"github.com/milvus-io/milvus/internal/proxy/taskmodel"
@@ -438,6 +439,19 @@ func testSearchTaskMembershipFilterPlanSizeLimit(t *testing.T) {
 
 func TestQueryTaskMembershipFilterPlanSizeLimit(t *testing.T) {
 	params := paramtable.Get()
+	item := &params.ProxyCfg.EnablePredicateOptimization
+	previous := item.GetValue()
+	t.Cleanup(func() { require.NoError(t, params.Save(item.Key, previous)) })
+	for _, enabled := range []string{"false", "true"} {
+		t.Run(enabled, func(t *testing.T) {
+			require.NoError(t, params.Save(item.Key, enabled))
+			testQueryTaskMembershipFilterPlanSizeLimit(t)
+		})
+	}
+}
+
+func testQueryTaskMembershipFilterPlanSizeLimit(t *testing.T) {
+	params := paramtable.Get()
 	key := params.ProxyCfg.MaxMembershipFilterPlanSize.Key
 	params.Save(key, "1")
 	t.Cleanup(func() { params.Reset(key) })
@@ -468,4 +482,65 @@ func TestQueryTaskMembershipFilterPlanSizeLimit(t *testing.T) {
 	require.Error(t, err)
 	assert.ErrorIs(t, err, merr.ErrParameterTooLarge)
 	assert.Equal(t, int32(1102), merr.Code(err))
+	assert.Equal(t, merr.InputError, merr.GetErrorType(err))
+}
+
+func TestPredicateOptimizationExportedPlanSizeLimit(t *testing.T) {
+	params := paramtable.Get()
+	for _, item := range []*paramtable.ParamItem{&params.ProxyCfg.EnablePredicateOptimization, &params.ProxyCfg.MaxMembershipFilterPlanSize} {
+		previous := item.GetValue()
+		t.Cleanup(func() { require.NoError(t, params.Save(item.Key, previous)) })
+	}
+	_, values := bloomPlanSizeIntegrationFixture(t)
+	helper, err := typeutil.CreateSchemaHelper(touchstone.Schema("guard", false))
+	require.NoError(t, err)
+	score := &schemapb.FunctionScore{Functions: []*schemapb.FunctionSchema{{
+		Type:   schemapb.FunctionType_Rerank,
+		Params: []*commonpb.KeyValuePair{{Key: "reranker", Value: "boost"}, {Key: "filter", Value: "membership_match(pk, {bf}, type=bloom)"}, {Key: "weight", Value: "2"}},
+	}}}
+	score.Functions = append(score.Functions, proto.Clone(score.Functions[0]).(*schemapb.FunctionSchema))
+	var legacySize int
+	for _, enabled := range []string{"false", "true"} {
+		t.Run(enabled, func(t *testing.T) {
+			require.NoError(t, params.Save(params.ProxyCfg.EnablePredicateOptimization.Key, enabled))
+			require.NoError(t, params.Reset(params.ProxyCfg.MaxMembershipFilterPlanSize.Key))
+			plan, err := planparserv2.CreateSearchPlan(helper, touchstone.Query, "vector", &planpb.QueryInfo{GroupByFieldId: -1, Topk: 10}, values, score)
+			require.NoError(t, err)
+			plan.OutputFieldIds = []int64{100, 101, 102}
+			size := proto.Size(plan)
+			if enabled == "false" {
+				legacySize = size
+			} else {
+				require.Less(t, size, legacySize, "exercise real five-pass simplification, not silent retention")
+			}
+			require.True(t, planparserv2.PlanContainsMembershipFilter(plan))
+			// Include the main expression, scorer blobs, query info and output fields;
+			// a second copy represents the shared budget across hybrid sub-plans.
+			for _, copies := range []int{1, 2} {
+				for _, headroom := range []int{1, 0, -1} {
+					require.NoError(t, params.Save(params.ProxyCfg.MaxMembershipFilterPlanSize.Key, strconv.Itoa(copies*size+headroom)))
+					var accumulated int64
+					for i := 0; i < copies; i++ {
+						serialized, next, err := MarshalPlanWithMembershipFilterSizeLimit(plan, accumulated)
+						if headroom < 0 && i == copies-1 {
+							require.ErrorIs(t, err, merr.ErrParameterTooLarge)
+							require.Equal(t, merr.InputError, merr.GetErrorType(err))
+							require.Equal(t, int32(1102), merr.Status(err).GetCode())
+							require.False(t, merr.Status(err).GetRetriable())
+							require.Nil(t, serialized)
+							require.Equal(t, accumulated, next)
+						} else {
+							require.NoError(t, err)
+							require.Len(t, serialized, size)
+							decoded := &planpb.PlanNode{}
+							require.NoError(t, proto.Unmarshal(serialized, decoded))
+							require.True(t, proto.Equal(plan, decoded))
+							require.Equal(t, accumulated+int64(size), next)
+						}
+						accumulated = next
+					}
+				}
+			}
+		})
+	}
 }

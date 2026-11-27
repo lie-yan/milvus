@@ -152,6 +152,46 @@ func TestPredicateOptimizationMembershipAccounting(t *testing.T) {
 	require.Equal(t, len(legacyBudget.validated), len(enabledBudget.validated))
 }
 
+func TestPredicateOptimizationShrinkingMembershipBudget(t *testing.T) {
+	enablePredicateOptimization(t)
+	helper := newTestSchemaHelper(t)
+	template, _ := roaringBytesTemplate(t, 1, 2, 3)
+	values := map[string]*schemapb.TemplateValue{"rb": template}
+	const source = "Int64Field > 10 and Int64Field < 0 and membership_match(Int64Field, {rb}, type=roaring)"
+	params := paramtable.Get()
+	limit := &params.ProxyCfg.MaxMembershipFilterPlanSize
+	previous := limit.GetValue()
+	t.Cleanup(func() { require.NoError(t, params.Save(limit.Key, previous)) })
+	for _, enabled := range []string{"false", "true"} {
+		t.Run(enabled, func(t *testing.T) {
+			require.NoError(t, params.Save(params.ProxyCfg.EnablePredicateOptimization.Key, enabled))
+			require.NoError(t, params.Save(limit.Key, previous))
+			budget := NewMembershipPreflightBudget()
+			var before *planpb.Expr
+			got, err := parseExprInner(helper, source, values, &ParserVisitorArgs{
+				MembershipBudget: budget,
+				OnParsedExpr:     func(expr *planpb.Expr) { before = proto.Clone(expr).(*planpb.Expr) },
+			})
+			require.NoError(t, err)
+			require.Less(t, proto.Size(got), proto.Size(before), "the contradiction must actually shrink")
+			require.False(t, hasMembershipFilterExpr(got), "the simplified predicate no longer carries the blob")
+			require.Positive(t, budget.occurrenceBytes, "removed blobs still consume the input budget")
+			size := max(budget.occurrenceBytes, int64(budget.aggregateDecodedBytes))
+			for _, headroom := range []int64{1, 0, -1} {
+				require.NoError(t, params.Save(limit.Key, strconv.FormatInt(size+headroom, 10)))
+				observed := false
+				_, err = parseExprInner(helper, source, values, &ParserVisitorArgs{OnParsedExpr: func(*planpb.Expr) { observed = true }})
+				if headroom >= 0 {
+					require.NoError(t, err)
+				} else {
+					require.ErrorIs(t, err, merr.ErrParameterTooLarge)
+					require.False(t, observed, "reject before either rewrite stage")
+				}
+			}
+		})
+	}
+}
+
 func TestPredicateOptimizationRuntimeSwitch(t *testing.T) {
 	enablePredicateOptimization(t)
 	helper := newTestSchemaHelper(t)
@@ -234,6 +274,7 @@ func TestPredicateOptimizationScorerMembershipBudget(t *testing.T) {
 	values := map[string]*schemapb.TemplateValue{"rb": template}
 	const filter = "membership_match(Int64Field, {rb}, type=roaring)"
 	score := &schemapb.FunctionScore{Functions: []*schemapb.FunctionSchema{{Type: schemapb.FunctionType_Rerank, Params: []*commonpb.KeyValuePair{{Key: "reranker", Value: "boost"}, {Key: "filter", Value: filter}, {Key: "weight", Value: "2"}}}}}
+	score.Functions = append(score.Functions, proto.Clone(score.Functions[0]).(*schemapb.FunctionSchema))
 	single := NewMembershipPreflightBudget()
 	_, err := parseExprInner(helper, filter, values, &ParserVisitorArgs{MembershipBudget: single})
 	require.NoError(t, err)
@@ -249,16 +290,24 @@ func TestPredicateOptimizationScorerMembershipBudget(t *testing.T) {
 			budget := NewMembershipPreflightBudget()
 			_, err := CreateSearchPlanArgs(helper, filter, "FloatVectorField", &planpb.QueryInfo{GroupByFieldId: -1}, values, score, &ParserVisitorArgs{MembershipBudget: budget})
 			require.NoError(t, err)
-			require.Equal(t, 2*single.occurrenceBytes, budget.occurrenceBytes)
-			require.Equal(t, 2*single.aggregateDecodedBytes, budget.aggregateDecodedBytes, "decoded memory is charged per occurrence despite shared validation")
+			require.Equal(t, 3*single.occurrenceBytes, budget.occurrenceBytes)
+			require.Equal(t, 3*single.aggregateDecodedBytes, budget.aggregateDecodedBytes, "decoded memory is charged per occurrence despite shared validation")
 			require.Len(t, budget.validated, len(single.validated))
 			// Both serialized and decoded sizes use this limit; one occurrence must fit.
-			combinedLimit := max(2*single.occurrenceBytes, int64(2*single.aggregateDecodedBytes)) - 1
-			require.NoError(t, params.Save(limit.Key, strconv.FormatInt(combinedLimit, 10)))
-			_, err = CreateSearchPlanArgs(helper, filter, "FloatVectorField", &planpb.QueryInfo{GroupByFieldId: -1}, values, nil, nil)
-			require.NoError(t, err, "main predicate alone must fit before testing the shared scorer budget")
-			_, err = CreateSearchPlanArgs(helper, filter, "FloatVectorField", &planpb.QueryInfo{GroupByFieldId: -1}, values, score, nil)
-			require.ErrorIs(t, err, merr.ErrParameterTooLarge, "scorer must consume the main predicate's occurrence budget")
+			combinedSize := max(3*single.occurrenceBytes, int64(3*single.aggregateDecodedBytes))
+			for _, headroom := range []int64{1, 0, -1} {
+				t.Run(strconv.FormatInt(headroom, 10), func(t *testing.T) {
+					require.NoError(t, params.Save(limit.Key, strconv.FormatInt(combinedSize+headroom, 10)))
+					_, err = CreateSearchPlanArgs(helper, filter, "FloatVectorField", &planpb.QueryInfo{GroupByFieldId: -1}, values, score, nil)
+					if headroom >= 0 {
+						require.NoError(t, err)
+					} else {
+						require.ErrorIs(t, err, merr.ErrParameterTooLarge)
+						require.Contains(t, err.Error(), "parse scorer filter failed")
+						require.Equal(t, merr.InputError, merr.GetErrorType(err))
+					}
+				})
+			}
 		})
 	}
 }
