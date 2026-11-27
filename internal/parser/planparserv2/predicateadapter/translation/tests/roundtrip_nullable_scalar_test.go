@@ -151,6 +151,21 @@ func nullablePredicate(t *testing.T, expr *planpb.Expr, row map[int64]*planpb.Ge
 			return -1
 		}
 		return 0
+	case *planpb.Expr_JsonContainsExpr:
+		value, present := row[n.JsonContainsExpr.ColumnInfo.FieldId]
+		require.True(t, present)
+		if value == nil {
+			return -1
+		}
+		require.Contains(t, []planpb.JSONContainsExpr_JSONOp{planpb.JSONContainsExpr_Contains, planpb.JSONContainsExpr_ContainsAny}, n.JsonContainsExpr.Op)
+		for _, item := range value.GetArrayVal().GetArray() {
+			for _, candidate := range n.JsonContainsExpr.Elements {
+				if compareValues(t, planpb.OpType_Equal, item, candidate) {
+					return 1
+				}
+			}
+		}
+		return 0
 	case *planpb.Expr_TermExpr:
 		if row[n.TermExpr.ColumnInfo.FieldId] == nil {
 			return -1

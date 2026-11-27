@@ -8,15 +8,15 @@ func probeRoundTrip(ctx context.Context, input orchestration.AttemptInput, valid
 	raw, readErr := os.ReadFile(path)
 	encoded, marshalErr := proto.MarshalOptions{Deterministic: true}.Marshal(input.Original)
 	if readErr != nil || marshalErr != nil || json.Unmarshal(raw, &controls) != nil {
-		return orchestration.RoundTrip(ctx, input, validate)
+		return orchestration.Optimize(ctx, input, validate)
 	}
 	selected, ok := controls[fmt.Sprintf("%x", sha256.Sum256(encoded))]
 	if !ok {
-		return orchestration.RoundTrip(ctx, input, validate)
+		return orchestration.Optimize(ctx, input, validate)
 	}
 	claim, err := os.OpenFile(filepath.Join(selected.Directory, "claim"), os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0600)
 	if err != nil {
-		return orchestration.RoundTrip(ctx, input, validate)
+		return orchestration.Optimize(ctx, input, validate)
 	}
 	claim.Close()
 	publish := func(name string, value any) {
@@ -49,7 +49,7 @@ func probeRoundTrip(ctx context.Context, input orchestration.AttemptInput, valid
 		input.Original = &planpb.Expr{}
 	}
 	before := proto.Clone(input.Original)
-	result, err := orchestration.RoundTrip(ctx, input, validate)
+	result, err := orchestration.Optimize(ctx, input, validate)
 	publish("completed.json", map[string]any{"pid": os.Getpid(), "outcome": result.Outcome(), "abort": orchestration.IsAdapterAbort(err), "code": merr.Code(err), "source_unchanged": proto.Equal(before, input.Original)})
 	return result, err
 }

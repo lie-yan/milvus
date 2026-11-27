@@ -78,7 +78,7 @@ func TestRoundTripStageFailures(t *testing.T) {
 				}
 				return fault, nil
 			}
-			result, err := roundTrip(ctx, input, func(*planpb.Expr) error { t.Fatal("failed stage reached placement"); return nil }, adapterruntime.SharedRuntime, build)
+			result, err := roundTrip(ctx, input, func(*planpb.Expr) error { t.Fatal("failed stage reached placement"); return nil }, adapterruntime.SharedRuntime, identityRewrite, build)
 			require.Nil(t, result.Candidate())
 			require.Equal(t, stage, result.Report().Stage)
 			require.True(t, proto.Equal(before, input.Original))
@@ -99,7 +99,7 @@ func TestRoundTripStageFailures(t *testing.T) {
 	}
 	// An ordinary internal code alone cannot establish containment of a late failure.
 	cause := merr.WrapErrServiceInternalMsg("unclassified export failure")
-	result, err := roundTrip(context.Background(), input, func(*planpb.Expr) error { t.Fatal("uncontained failure reached placement"); return nil }, adapterruntime.SharedRuntime, func(in AttemptInput, runtime *adapterruntime.Runtime) (pairedTranslator, error) {
+	result, err := roundTrip(context.Background(), input, func(*planpb.Expr) error { t.Fatal("uncontained failure reached placement"); return nil }, adapterruntime.SharedRuntime, identityRewrite, func(in AttemptInput, runtime *adapterruntime.Runtime) (pairedTranslator, error) {
 		translator, err := newTranslator(in, runtime)
 		return &faultTranslator{pairedTranslator: translator, stage: StageExport, unclassified: cause}, err
 	})
@@ -167,7 +167,7 @@ func TestRoundTripDoesNotExecute(t *testing.T) {
 	result, err := roundTrip(context.Background(), input, func(candidate *planpb.Expr) error {
 		require.True(t, proto.Equal(input.Original, candidate))
 		return nil
-	}, func() (*adapterruntime.Runtime, error) { return runtime, nil }, func(in AttemptInput, runtime *adapterruntime.Runtime) (pairedTranslator, error) {
+	}, func() (*adapterruntime.Runtime, error) { return runtime, nil }, identityRewrite, func(in AttemptInput, runtime *adapterruntime.Runtime) (pairedTranslator, error) {
 		translator, err := translation.New(&instrumentedRuntime{Runtime: runtime, provider: counter}, in.SchemaView, p)
 		return &traversalCounter{pairedTranslator: translator, imports: &importedCount, exports: &exportedCount}, err
 	})
@@ -200,4 +200,9 @@ func (c *traversalCounter) Export(ctx context.Context, imported *translation.Imp
 		*c.exports++
 	}
 	return result, err
+}
+
+// Returns the graph unchanged to isolate orchestration stages from rewriting.
+func identityRewrite(_ context.Context, root expressions.Expression, _ *adapterruntime.Runtime) (expressions.Expression, error) {
+	return root, nil
 }

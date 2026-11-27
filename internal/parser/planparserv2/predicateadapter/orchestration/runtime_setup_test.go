@@ -37,10 +37,10 @@ func TestRoundTripGatePrecedesRuntimeAcquisition(t *testing.T) {
 			result, err := roundTrip(attemptContext, in, validate, func() (*adapterruntime.Runtime, error) {
 				t.Fatal("invalid attempt loaded runtime")
 				return nil, merr.ErrServiceInternal
-			}, newTranslator)
+			}, identityRewrite, newTranslator)
 			require.True(t, IsAdapterAbort(err))
 			require.ErrorIs(t, err, expected)
-			require.Equal(t, StageGate, result.Report().Stage)
+			require.Equal(t, StageSetup, result.Report().Stage)
 			require.Nil(t, result.Candidate())
 		})
 	}
@@ -77,7 +77,7 @@ func TestRoundTripRuntimeAcquisition(t *testing.T) {
 					cancel()
 				}
 				return tc.runtime, tc.cause
-			}, func(in AttemptInput, got *adapterruntime.Runtime) (pairedTranslator, error) {
+			}, identityRewrite, func(in AttemptInput, got *adapterruntime.Runtime) (pairedTranslator, error) {
 				builds++
 				require.Same(t, runtime, got)
 				return newTranslator(in, got)

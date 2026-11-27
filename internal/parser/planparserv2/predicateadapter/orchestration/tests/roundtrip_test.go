@@ -52,7 +52,7 @@ func TestRoundTripAcceptanceAndOwnership(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, 1, calls)
 	require.Equal(t, orchestration.OutcomeTranslated, result.Outcome())
-	require.Equal(t, orchestration.StageAcceptance, result.Report().Stage)
+	require.Equal(t, orchestration.StageValidate, result.Report().Stage)
 	candidate := result.Candidate()
 	candidate.GetBinaryExpr().Left.GetUnaryRangeExpr().Value.Val = &planpb.GenericValue_Int64Val{Int64Val: 999}
 	candidate.GetBinaryExpr().Right.GetNullExpr().ColumnInfo.FieldId = 999
@@ -102,10 +102,10 @@ func TestRoundTripPlacementFailuresAndCancellation(t *testing.T) {
 		outcome orchestration.Outcome
 		stage   orchestration.Stage
 	}{
-		{"rejected", placementErr, false, orchestration.OutcomeRetainedAfterFailure, orchestration.StagePlacement},
-		{"callback cancellation", merr.Wrap(context.Canceled, "validator"), false, orchestration.OutcomeUnknown, orchestration.StagePlacement},
-		{"callback deadline", merr.Wrap(context.DeadlineExceeded, "validator"), false, orchestration.OutcomeUnknown, orchestration.StagePlacement},
-		{"cancel before transfer", nil, true, orchestration.OutcomeUnknown, orchestration.StageAcceptance},
+		{"rejected", placementErr, false, orchestration.OutcomeRetainedAfterFailure, orchestration.StageValidate},
+		{"callback cancellation", merr.Wrap(context.Canceled, "validator"), false, orchestration.OutcomeUnknown, orchestration.StageValidate},
+		{"callback deadline", merr.Wrap(context.DeadlineExceeded, "validator"), false, orchestration.OutcomeUnknown, orchestration.StageValidate},
+		{"cancel before transfer", nil, true, orchestration.OutcomeUnknown, orchestration.StageValidate},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			ctx, cancel := context.WithCancel(context.Background())

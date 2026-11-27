@@ -29,7 +29,7 @@ func IsFailure(err error) bool {
 	return errors.As(err, &marked)
 }
 
-// Assembles borrowed inputs and runs the empty pipeline synchronously to completion.
+// Assembles borrowed inputs and runs the rewrite pipeline synchronously to completion.
 // The required validator must synchronously inspect candidates without mutation or retention.
 func Apply(helper *typeutil.SchemaHelper, original *planpb.Expr, validateExpr func(*planpb.Expr) error) (*planpb.Expr, error) {
 	if helper == nil {
@@ -39,7 +39,7 @@ func Apply(helper *typeutil.SchemaHelper, original *planpb.Expr, validateExpr fu
 	if err != nil {
 		return nil, &failure{cause: err}
 	}
-	result, err := orchestration.RoundTrip(context.Background(), orchestration.AttemptInput{
+	result, err := orchestration.Optimize(context.Background(), orchestration.AttemptInput{
 		Original: original, SchemaView: view,
 	}, validateExpr)
 	if err != nil {

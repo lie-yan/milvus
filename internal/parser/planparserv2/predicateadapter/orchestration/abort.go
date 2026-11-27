@@ -62,8 +62,8 @@ func newFailureResult(ctx context.Context, stage Stage, report Report, cause err
 				outcome = OutcomeRetainedAfterFailure
 			}
 		}
-	} else if stage == StagePlacement {
-		// Only the trusted read-only candidate validator supplies errors at this boundary.
+	} else if stage == StageValidate || stage == StageRewrite {
+		// Trusted graph rewriters and the read-only validator cannot mutate the borrowed source.
 		outcome = OutcomeRetainedAfterFailure
 	}
 	// Cancellation wins over retention even if it arrived during classification.

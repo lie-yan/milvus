@@ -108,7 +108,7 @@ func TestAbortProvenanceAndPlacement(t *testing.T) {
 	require.False(t, IsAdapterAbort(merr.Wrap(cause, "ordinary parser context")))
 
 	placement := merr.WrapErrQueryPlanMsg("candidate placement rejected")
-	result, err = newFailureResult(ctx, StagePlacement, Report{}, placement, true)
+	result, err = newFailureResult(ctx, StageValidate, Report{}, placement, true)
 	require.NoError(t, err)
 	require.Equal(t, OutcomeRetainedAfterFailure, result.Outcome())
 	require.Same(t, placement, result.Report().Cause)
@@ -133,7 +133,7 @@ func TestFailureCancellationPrecedence(t *testing.T) {
 	for _, cause := range []error{context.Canceled, context.DeadlineExceeded} {
 		// A callback can return cancellation before the request context reports it.
 		wrapped := merr.Wrap(cause, "placement callback")
-		result, err := newFailureResult(context.Background(), StagePlacement, Report{}, wrapped, true)
+		result, err := newFailureResult(context.Background(), StageValidate, Report{}, wrapped, true)
 		require.True(t, IsAdapterAbort(err))
 		require.ErrorIs(t, err, cause)
 		require.Same(t, wrapped, result.Report().Cause)
@@ -143,7 +143,7 @@ func TestFailureCancellationPrecedence(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 	for _, ctx := range []context.Context{ctx, &dispositionCancellation{Context: context.Background()}} {
-		result, err := newFailureResult(ctx, StagePlacement, Report{}, merr.ErrQueryPlan, true)
+		result, err := newFailureResult(ctx, StageValidate, Report{}, merr.ErrQueryPlan, true)
 		require.True(t, IsAdapterAbort(err))
 		require.ErrorIs(t, err, context.Canceled)
 		require.Nil(t, result.Candidate())

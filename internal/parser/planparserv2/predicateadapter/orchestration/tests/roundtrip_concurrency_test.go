@@ -69,12 +69,12 @@ func TestConcurrentRoundTripIsolation(t *testing.T) {
 	}
 	require.NoError(t, errors[rejected])
 	require.Equal(t, orchestration.OutcomeRetainedAfterFailure, results[rejected].Outcome())
-	require.Equal(t, orchestration.StagePlacement, results[rejected].Report().Stage)
+	require.Equal(t, orchestration.StageValidate, results[rejected].Report().Stage)
 	require.ErrorIs(t, results[rejected].Report().Cause, merr.ErrQueryPlan)
 	require.Nil(t, results[rejected].Candidate())
 	require.True(t, orchestration.IsAdapterAbort(errors[cancelled]))
 	require.ErrorIs(t, errors[cancelled], context.Canceled)
-	require.Equal(t, orchestration.StageAcceptance, results[cancelled].Report().Stage)
+	require.Equal(t, orchestration.StageValidate, results[cancelled].Report().Stage)
 	require.Nil(t, results[cancelled].Candidate())
 
 	// All attempts have returned before any candidate is mutated.

@@ -41,6 +41,9 @@ import (
 //go:embed probe.go.txt
 var probeSource string
 
+//go:embed rewrite_probe.go.txt
+var rewriteProbeSource string
+
 // Build an observed server without modifying production sources or the normal binary.
 func TestMain(m *testing.M) { os.Exit(runObserved(m)) }
 
@@ -60,10 +63,10 @@ func runObserved(m *testing.M) int {
 	if err != nil {
 		panic(err)
 	}
-	if strings.Count(string(source), "orchestration.RoundTrip(") != 1 {
+	if strings.Count(string(source), "orchestration.Optimize(") != 1 {
 		panic("adapter observation seam changed")
 	}
-	rewritten := strings.Replace(string(source), "orchestration.RoundTrip(", "probeRoundTrip(", 1)
+	rewritten := strings.Replace(string(source), "orchestration.Optimize(", "probeRoundTrip(", 1)
 	rewritten = strings.Replace(rewritten, "import (", `import (
  "crypto/sha256"
  "encoding/json"
@@ -81,7 +84,36 @@ func runObserved(m *testing.M) int {
 	if err = os.WriteFile(replacement, formatted, 0600); err != nil {
 		panic(err)
 	}
-	overlay, err := json.Marshal(map[string]any{"Replace": map[string]string{original: replacement}})
+	rewriteOriginal := filepath.Join(root, "internal/parser/planparserv2/predicateadapter/orchestration/roundtrip.go")
+	rewriteSource, err := os.ReadFile(rewriteOriginal)
+	if err != nil {
+		panic(err)
+	}
+	seam := "adapterruntime.SharedRuntime, rewrite, newTranslator)"
+	if strings.Count(string(rewriteSource), seam) != 1 {
+		panic("rewrite observation seam changed")
+	}
+	rewriteText := strings.Replace(string(rewriteSource), seam, "adapterruntime.SharedRuntime, probeRewriter(input), newTranslator)", 1)
+	rewriteText = strings.Replace(rewriteText, "import (", `import (
+ "crypto/sha256"
+ "encoding/json"
+ "fmt"
+ "os"
+ "path/filepath"
+ "strconv"
+ "strings"
+ "time"
+ "google.golang.org/protobuf/proto"
+`, 1) + rewriteProbeSource
+	formatted, err = format.Source([]byte(rewriteText))
+	if err != nil {
+		panic(err)
+	}
+	rewriteReplacement := filepath.Join(output, "roundtrip.go")
+	if err = os.WriteFile(rewriteReplacement, formatted, 0600); err != nil {
+		panic(err)
+	}
+	overlay, err := json.Marshal(map[string]any{"Replace": map[string]string{original: replacement, rewriteOriginal: rewriteReplacement}})
 	if err != nil {
 		panic(err)
 	}
@@ -128,6 +160,9 @@ type attemptReceipt struct {
 func (s *EmptyPipelineSuite) arm(schema *schemapb.CollectionSchema, action string, sources ...string) []string {
 	helper, err := typeutil.CreateSchemaHelper(schema)
 	s.Require().NoError(err)
+	if s.optimized && action == "observe" {
+		action = "optimize:5"
+	}
 	controls := map[string]attemptControl{}
 	var dirs []string
 	for _, source := range sources {

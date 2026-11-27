@@ -15,7 +15,14 @@ import (
 // Translates one post-legacy predicate and transfers only a complete accepted candidate.
 // Borrowed source/schema must stay immutable; the expression validator must synchronously read without mutation or retention.
 func RoundTrip(ctx context.Context, input AttemptInput, validateExpr func(*planpb.Expr) error) (AttemptResult, error) {
-	return roundTrip(ctx, input, validateExpr, adapterruntime.SharedRuntime, newTranslator)
+	return roundTrip(ctx, input, validateExpr, adapterruntime.SharedRuntime, func(_ context.Context, root expressions.Expression, _ *adapterruntime.Runtime) (expressions.Expression, error) {
+		return root, nil
+	}, newTranslator)
+}
+
+// Rewrites a translated predicate before exporting and validating the complete candidate.
+func Optimize(ctx context.Context, input AttemptInput, validateExpr func(*planpb.Expr) error) (AttemptResult, error) {
+	return roundTrip(ctx, input, validateExpr, adapterruntime.SharedRuntime, rewrite, newTranslator)
 }
 
 // Minimal private seam for isolated stage faults; production always uses the paired translator.
@@ -32,6 +39,7 @@ func newTranslator(input AttemptInput, runtime *adapterruntime.Runtime) (pairedT
 // Shares the production sequence with tests without mutable global hooks.
 func roundTrip(ctx context.Context, input AttemptInput, validateExpr func(*planpb.Expr) error,
 	load func() (*adapterruntime.Runtime, error),
+	optimize func(context.Context, expressions.Expression, *adapterruntime.Runtime) (expressions.Expression, error),
 	build func(AttemptInput, *adapterruntime.Runtime) (pairedTranslator, error),
 ) (AttemptResult, error) {
 	if proceed, result, err := checkGate(ctx, input, validateExpr); !proceed {
@@ -61,23 +69,27 @@ func roundTrip(ctx context.Context, input AttemptInput, validateExpr func(*planp
 	if err != nil {
 		return newFailureResult(ctx, StageImport, report, err, true)
 	}
-	// Export trusts the imported graph and reconstructs a fresh candidate.
-	candidate, err := translator.Export(ctx, imported, imported.Root())
+	root, err := optimize(ctx, imported.Root(), runtime)
+	if err != nil {
+		return newFailureResult(ctx, StageRewrite, report, err, true)
+	}
+	// Export follows the rewritten graph using the original immutable bindings.
+	candidate, err := translator.Export(ctx, imported, root)
 	if err != nil {
 		return newFailureResult(ctx, StageExport, report, err, true)
 	}
 	if err := ctx.Err(); err != nil {
-		return newAbortResult(StagePlacement, report, err)
+		return newAbortResult(StageValidate, report, err)
 	}
 	if err := validateExpr(candidate); err != nil {
-		return newFailureResult(ctx, StagePlacement, report, err, true)
+		return newFailureResult(ctx, StageValidate, report, err, true)
 	}
 	if err := ctx.Err(); err != nil {
-		return newAbortResult(StageAcceptance, report, err)
+		return newAbortResult(StageValidate, report, err)
 	}
 	result, err := newTranslatedResult(candidate, report)
 	if err != nil {
-		return newFailureResult(ctx, StageAcceptance, report, err, false)
+		return newFailureResult(ctx, StageValidate, report, err, false)
 	}
 	return result, nil
 }

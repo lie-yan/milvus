@@ -46,6 +46,7 @@ import (
 type EmptyPipelineSuite struct {
 	integration.MiniClusterSuite
 	controlDir string
+	optimized  bool
 }
 
 func (s *EmptyPipelineSuite) SetupSuite() {
@@ -92,6 +93,13 @@ func (s *EmptyPipelineSuite) setEnabled(ctx context.Context, enabled bool) {
 		}
 		return false
 	}, 15*time.Second, 100*time.Millisecond)
+}
+
+// Exercises query, count, search, hybrid and scorer callers with the composed pipeline.
+func (s *EmptyPipelineSuite) TestOptimizedExecutionParity() {
+	s.optimized = true
+	defer func() { s.optimized = false }()
+	s.TestExecutionParity()
 }
 
 func (s *EmptyPipelineSuite) TestExecutionParity() {

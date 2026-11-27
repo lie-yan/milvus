@@ -69,7 +69,7 @@ func TestPredicateOptimizationPostLegacyHook(t *testing.T) {
 			observations, attempts := 0, 0
 			var borrowed, before *planpb.Expr
 			var run func(context.Context, orchestration.AttemptInput, func(*planpb.Expr) error) (orchestration.AttemptResult, error)
-			patch := mockey.Mock(orchestration.RoundTrip).Origin(&run).To(func(ctx context.Context, input orchestration.AttemptInput, validate func(*planpb.Expr) error) (orchestration.AttemptResult, error) {
+			patch := mockey.Mock(orchestration.Optimize).Origin(&run).To(func(ctx context.Context, input orchestration.AttemptInput, validate func(*planpb.Expr) error) (orchestration.AttemptResult, error) {
 				attempts++
 				require.Equal(t, 1, observations)
 				require.Nil(t, ctx.Done(), "production translation must run to completion")
@@ -200,7 +200,7 @@ func TestPredicateOptimizationScorerSwitchCapture(t *testing.T) {
 			observed := 0
 			var translatedValues []int64
 			var run func(context.Context, orchestration.AttemptInput, func(*planpb.Expr) error) (orchestration.AttemptResult, error)
-			patch := mockey.Mock(orchestration.RoundTrip).Origin(&run).To(func(ctx context.Context, in orchestration.AttemptInput, validate func(*planpb.Expr) error) (orchestration.AttemptResult, error) {
+			patch := mockey.Mock(orchestration.Optimize).Origin(&run).To(func(ctx context.Context, in orchestration.AttemptInput, validate func(*planpb.Expr) error) (orchestration.AttemptResult, error) {
 				result, err := run(ctx, in, validate)
 				require.NoError(t, err)
 				require.Equal(t, orchestration.OutcomeTranslated, result.Outcome())
@@ -326,12 +326,12 @@ func TestPredicateOptimizationNullableScalarWiring(t *testing.T) {
 						return result, err
 					}).Build()
 					defer inspect.UnPatch()
-					var run func(context.Context, orchestration.AttemptInput, func(*planpb.Expr) error) (orchestration.AttemptResult, error)
-					patch := mockey.Mock(orchestration.RoundTrip).Origin(&run).To(func(ctx context.Context, input orchestration.AttemptInput, validate func(*planpb.Expr) error) (orchestration.AttemptResult, error) {
+					patch := mockey.Mock(orchestration.Optimize).To(func(ctx context.Context, input orchestration.AttemptInput, validate func(*planpb.Expr) error) (orchestration.AttemptResult, error) {
 						attempts++
 						require.True(t, proto.Equal(legacy, input.Original))
 						before := proto.Clone(input.Original)
-						result, err := run(ctx, input, validate)
+						// Preserve the explicit empty-pipeline baseline at the production entry seam.
+						result, err := orchestration.RoundTrip(ctx, input, validate)
 						require.NoError(t, err)
 						require.Equal(t, orchestration.OutcomeTranslated, result.Outcome())
 						require.True(t, proto.Equal(before, input.Original))
@@ -355,7 +355,7 @@ func TestPredicateOptimizationScalarDomains(t *testing.T) {
 	var current *testing.T
 	attempts := 0
 	var run func(context.Context, orchestration.AttemptInput, func(*planpb.Expr) error) (orchestration.AttemptResult, error)
-	patch := mockey.Mock(orchestration.RoundTrip).Origin(&run).To(func(ctx context.Context, input orchestration.AttemptInput, validate func(*planpb.Expr) error) (orchestration.AttemptResult, error) {
+	patch := mockey.Mock(orchestration.Optimize).Origin(&run).To(func(ctx context.Context, input orchestration.AttemptInput, validate func(*planpb.Expr) error) (orchestration.AttemptResult, error) {
 		attempts++
 		result, err := run(ctx, input, validate)
 		require.NoError(current, err)
@@ -412,7 +412,7 @@ func TestPredicateOptimizationArrayWiring(t *testing.T) {
 	var current *testing.T
 	attempts := 0
 	var run func(context.Context, orchestration.AttemptInput, func(*planpb.Expr) error) (orchestration.AttemptResult, error)
-	patch := mockey.Mock(orchestration.RoundTrip).Origin(&run).To(func(ctx context.Context, input orchestration.AttemptInput, validate func(*planpb.Expr) error) (orchestration.AttemptResult, error) {
+	patch := mockey.Mock(orchestration.Optimize).Origin(&run).To(func(ctx context.Context, input orchestration.AttemptInput, validate func(*planpb.Expr) error) (orchestration.AttemptResult, error) {
 		attempts++
 		before := proto.Clone(input.Original)
 		result, err := run(ctx, input, validate)
@@ -527,12 +527,12 @@ func TestPredicateOptimizationTouchstoneWiring(t *testing.T) {
 					return result, nil
 				}).Build()
 				defer inspect.UnPatch()
-				var run func(context.Context, orchestration.AttemptInput, func(*planpb.Expr) error) (orchestration.AttemptResult, error)
-				observe := mockey.Mock(orchestration.RoundTrip).Origin(&run).To(func(ctx context.Context, input orchestration.AttemptInput, validate func(*planpb.Expr) error) (orchestration.AttemptResult, error) {
+				observe := mockey.Mock(orchestration.Optimize).To(func(ctx context.Context, input orchestration.AttemptInput, validate func(*planpb.Expr) error) (orchestration.AttemptResult, error) {
 					attempts++
 					require.True(t, proto.Equal(original, input.Original))
 					before := proto.Clone(input.Original)
-					result, err := run(ctx, input, validate)
+					// Preserve the explicit empty-pipeline baseline at the production entry seam.
+					result, err := orchestration.RoundTrip(ctx, input, validate)
 					require.NoError(t, err)
 					require.Equal(t, orchestration.OutcomeTranslated, result.Outcome())
 					require.True(t, proto.Equal(before, input.Original))

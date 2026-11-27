@@ -18,6 +18,9 @@ package predicateoptimization
 
 import (
 	"context"
+	"encoding/json"
+	"os"
+	"path/filepath"
 	"sort"
 	"strconv"
 
@@ -35,7 +38,13 @@ import (
 )
 
 // Queries P and NOT P separately so UNKNOWN cannot masquerade as FALSE.
-func (s *EmptyPipelineSuite) TestTouchstoneExecutionParity() {
+func (s *EmptyPipelineSuite) TestTouchstoneExecutionParity() { s.touchstoneExecutionParity(false) }
+
+func (s *EmptyPipelineSuite) TestTouchstoneOptimizedExecutionParity() {
+	s.touchstoneExecutionParity(true)
+}
+
+func (s *EmptyPipelineSuite) touchstoneExecutionParity(optimized bool) {
 	ctx, c, r := s.Cluster.GetContext(), s.Cluster.MilvusClient, s.Require()
 	for _, nullableArticle := range []bool{false, true} {
 		name := "predicate_touchstone_" + funcutil.GenRandomStr()
@@ -85,37 +94,43 @@ func (s *EmptyPipelineSuite) TestTouchstoneExecutionParity() {
 			status, err = c.LoadCollection(ctx, &milvuspb.LoadCollectionRequest{CollectionName: name})
 			r.NoError(merr.CheckRPCCall(status, err))
 			s.WaitForLoad(ctx, name)
-			for _, enabled := range []bool{false, true} {
-				s.T().Logf("touchstone nullable_article=%v indexed=%v enabled=%v rows=%d", nullableArticle, indexed, enabled, len(rows))
-				s.setEnabled(ctx, enabled)
-				positive := s.touchstoneQuery(ctx, name, schema, touchstone.Query, enabled)
-				negative := s.touchstoneQuery(ctx, name, schema, "not ("+touchstone.Query+")", enabled)
-				r.Equal(expected["TRUE"], positive)
-				r.Equal(expected["FALSE"], negative)
-				classified := map[int64]bool{}
-				for _, id := range positive {
-					classified[id] = true
-				}
-				for _, id := range negative {
-					r.False(classified[id], "row selected by both P and NOT P")
-					classified[id] = true
-				}
-				var unknown []int64
-				for _, row := range rows {
-					if !classified[row.PK] {
-						unknown = append(unknown, row.PK)
+			actions := []string{"observe"}
+			if optimized {
+				actions = []string{"optimize:1", "optimize:2", "optimize:3", "optimize:4", "optimize:5"}
+			}
+			for _, action := range actions {
+				for _, enabled := range []bool{false, true} {
+					s.T().Logf("action=%s touchstone nullable_article=%v indexed=%v enabled=%v rows=%d", action, nullableArticle, indexed, enabled, len(rows))
+					s.setEnabled(ctx, enabled)
+					positive := s.touchstoneQuery(ctx, name, schema, touchstone.Query, enabled, action)
+					negative := s.touchstoneQuery(ctx, name, schema, "not ("+touchstone.Query+")", enabled, action)
+					r.Equal(expected["TRUE"], positive)
+					r.Equal(expected["FALSE"], negative)
+					classified := map[int64]bool{}
+					for _, id := range positive {
+						classified[id] = true
 					}
+					for _, id := range negative {
+						r.False(classified[id], "row selected by both P and NOT P")
+						classified[id] = true
+					}
+					var unknown []int64
+					for _, row := range rows {
+						if !classified[row.PK] {
+							unknown = append(unknown, row.PK)
+						}
+					}
+					r.Equal(expected["UNKNOWN"], unknown)
+					// Confirm the intended native array path, independently of full-query short circuiting.
+					before := s.executionFeatures(ctx)
+					got := s.touchstoneQuery(ctx, name, schema, "array_contains(tag_ids, 8791004)", enabled, action)
+					r.Equal(expected["array"], got)
+					feature := "filter_exec_path=brute_force"
+					if indexed {
+						feature = "scalar_index_type=INVERTED"
+					}
+					r.Greater(s.executionFeatures(ctx)[feature], before[feature], "native path indexed="+strconv.FormatBool(indexed))
 				}
-				r.Equal(expected["UNKNOWN"], unknown)
-				// Confirm the intended native array path, independently of full-query short circuiting.
-				before := s.executionFeatures(ctx)
-				got := s.touchstoneQuery(ctx, name, schema, "array_contains(tag_ids, 8791004)", enabled)
-				r.Equal(expected["array"], got)
-				feature := "filter_exec_path=brute_force"
-				if indexed {
-					feature = "scalar_index_type=INVERTED"
-				}
-				r.Greater(s.executionFeatures(ctx)[feature], before[feature], "native path indexed="+strconv.FormatBool(indexed))
 			}
 			status, err = c.ReleaseCollection(ctx, &milvuspb.ReleaseCollectionRequest{CollectionName: name})
 			r.NoError(merr.CheckRPCCall(status, err))
@@ -125,14 +140,29 @@ func (s *EmptyPipelineSuite) TestTouchstoneExecutionParity() {
 	}
 }
 
-func (s *EmptyPipelineSuite) touchstoneQuery(ctx context.Context, name string, schema *schemapb.CollectionSchema, query string, enabled bool) []int64 {
-	dirs := s.arm(schema, "observe", query)
+func (s *EmptyPipelineSuite) touchstoneQuery(ctx context.Context, name string, schema *schemapb.CollectionSchema, query string, enabled bool, action string) []int64 {
+	dirs := s.arm(schema, action, query)
 	result, err := s.Cluster.MilvusClient.Query(ctx, &milvuspb.QueryRequest{CollectionName: name, Expr: query, OutputFields: []string{"pk"}, ConsistencyLevel: commonpb.ConsistencyLevel_Strong})
 	s.Require().NoError(merr.CheckRPCCall(result, err))
 	s.translated(dirs, enabled, orchestration.OutcomeTranslated)
 	if enabled {
 		for _, dir := range dirs {
 			s.Require().True(s.receipt(dir, "completed").SourceUnchanged)
+			if action != "observe" {
+				data, err := os.ReadFile(filepath.Join(dir, "rewritten.json"))
+				s.Require().NoError(err)
+				var receipt struct {
+					Passes      int
+					Before      int   `json:"before_nodes"`
+					After       int   `json:"after_nodes"`
+					Nanoseconds int64 `json:"rewrite_ns"`
+				}
+				s.Require().NoError(json.Unmarshal(data, &receipt))
+				count, err := strconv.Atoi(action[len("optimize:"):])
+				s.Require().NoError(err)
+				s.Require().Equal(count, receipt.Passes)
+				s.T().Logf("rewrite passes=%d nodes=%d->%d duration=%dns", receipt.Passes, receipt.Before, receipt.After, receipt.Nanoseconds)
+			}
 		}
 	}
 	ids := append([]int64{}, result.GetFieldsData()[0].GetScalars().GetLongData().GetData()...)

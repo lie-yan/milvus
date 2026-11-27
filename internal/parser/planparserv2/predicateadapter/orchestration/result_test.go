@@ -22,7 +22,7 @@ func TestRetainedResultPreservesDiagnostics(t *testing.T) {
 	// Caller edits to diagnostic values cannot change the operation's disposition.
 	report.Outcome = OutcomeTranslated
 	require.Equal(t, OutcomeRetainedAfterFailure, result.Outcome())
-	bad, err := newRetainedResult(OutcomeTranslated, StageAcceptance, report, nil)
+	bad, err := newRetainedResult(OutcomeTranslated, StageValidate, report, nil)
 	require.ErrorIs(t, err, merr.ErrServiceInternal)
 	require.NotEqual(t, OutcomeTranslated, bad.Outcome())
 	require.Nil(t, bad.Candidate())
@@ -39,5 +39,5 @@ func TestTranslatedResultRequiresCandidate(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, OutcomeTranslated, result.Outcome())
 	require.Same(t, candidate, result.Candidate(), "acceptance transfers output without copying")
-	require.Equal(t, Report{Outcome: OutcomeTranslated, Stage: StageAcceptance}, result.Report())
+	require.Equal(t, Report{Outcome: OutcomeTranslated, Stage: StageValidate}, result.Report())
 }

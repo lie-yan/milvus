@@ -110,3 +110,27 @@ func TestGraphExportCoverageIsAtomic(t *testing.T) {
 	require.NoError(t, err)
 	require.True(t, proto.Equal(expectedExport(source), output))
 }
+
+// Known values remain executable even when a rewriter preserves a nullable type.
+func TestGraphExportNullableBooleanConstants(t *testing.T) {
+	translator, source := compareFixture(t, schemapb.DataType_Int64, schemapb.DataType_Int64, false)
+	imported := importSource(t, translator, source)
+	runtime, err := adapterruntime.SharedRuntime()
+	require.NoError(t, err)
+	for _, want := range []bool{false, true} {
+		value, err := runtime.ValueFactory().NewBool(runtime.Types().BoolMayNull, want)
+		require.NoError(t, err)
+		literal, err := expressions.NewLiteralExpression(value)
+		require.NoError(t, err)
+		output, err := translator.Export(context.Background(), imported, literal)
+		require.NoError(t, err)
+		require.Equal(t, want, evaluatePredicate(t, output, nil))
+	}
+	value, err := runtime.ValueFactory().NewNull(runtime.Types().BoolMayNull)
+	require.NoError(t, err)
+	literal, err := expressions.NewLiteralExpression(value)
+	require.NoError(t, err)
+	output, err := translator.Export(context.Background(), imported, literal)
+	require.Nil(t, output)
+	assertFailure(t, err, translation.UnsupportedExpression, translation.StageExport)
+}

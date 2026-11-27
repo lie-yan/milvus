@@ -1,0 +1,25 @@
+// Selects a cumulative pass prefix only in the observed test server.
+func probeRewriter(input AttemptInput) func(context.Context, expressions.Expression, *adapterruntime.Runtime) (expressions.Expression, error) {
+ return func(ctx context.Context, root expressions.Expression, runtime *adapterruntime.Runtime) (expressions.Expression, error) {
+  var controls map[string]struct { Directory, Action string }
+  raw, err := os.ReadFile(os.Getenv("PREDICATE_TEST_CONTROL"))
+  encoded, marshalErr := proto.MarshalOptions{Deterministic: true}.Marshal(input.Original)
+  if err != nil || marshalErr != nil || json.Unmarshal(raw, &controls) != nil { return root, nil }
+  selected := controls[fmt.Sprintf("%x", sha256.Sum256(encoded))]
+  if !strings.HasPrefix(selected.Action, "optimize:") { return root, nil }
+  count, err := strconv.Atoi(strings.TrimPrefix(selected.Action, "optimize:"))
+  if err != nil || count < 1 || count > 5 { panic("invalid test pass count") }
+  var nodes func(expressions.Expression) int
+  nodes = func(node expressions.Expression) int { n := 1; for i:=0; i<node.ChildCount(); i++ { n += nodes(node.ChildAt(i)) }; return n }
+  before := nodes(root)
+  start := time.Now()
+  var result expressions.Expression
+  if count == 5 { result, err = rewrite(ctx, root, runtime) } else { result, err = applyRewriters(ctx, root, rewriteRules(runtime)[:count]) }
+  elapsed := time.Since(start).Nanoseconds()
+  if err != nil { return nil, err }
+  receipt, err := json.Marshal(map[string]any{"passes":count,"before_nodes":before,"after_nodes":nodes(result),"rewrite_ns":elapsed})
+  if err != nil { panic(err) }
+  if err := os.WriteFile(filepath.Join(selected.Directory,"rewritten.json"),receipt,0600); err != nil { panic(err) }
+  return result, nil
+ }
+}

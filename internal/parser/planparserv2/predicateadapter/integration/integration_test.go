@@ -83,7 +83,7 @@ func TestPredicateOptimizationAborts(t *testing.T) {
 				patch := mockey.Mock(translation.New).Return(nil, cause).Build()
 				defer patch.UnPatch()
 			case "unknown outcome":
-				patch := mockey.Mock(orchestration.RoundTrip).Return(orchestration.AttemptResult{}, nil).Build()
+				patch := mockey.Mock(orchestration.Optimize).Return(orchestration.AttemptResult{}, nil).Build()
 				defer patch.UnPatch()
 			}
 			got, err := Apply(h, source, acceptCandidate)

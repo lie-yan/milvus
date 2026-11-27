@@ -5,7 +5,6 @@ import (
 	"errors"
 
 	"github.com/lie-yan/predicate-optimization/expressions"
-	"github.com/lie-yan/predicate-optimization/foundation"
 	shared "github.com/lie-yan/predicate-optimization/functions"
 	valueinterfaces "github.com/lie-yan/predicate-optimization/values/interfaces"
 
@@ -34,7 +33,8 @@ func (v *exporter) exportExpr(graph expressions.Expression) (*planpb.Expr, error
 		return v.exportOpaque(node)
 	case *expressions.LiteralExpression:
 		value, ok := node.Value().(valueinterfaces.BoolValue)
-		if !ok || node.Type().Nullability() != foundation.NonNull || value.IsNull() {
+		// A nullable declared type can still carry a known nonnull constant.
+		if !ok || value.IsNull() {
 			return nil, unsupportedExport("expected nonnull Boolean predicate")
 		}
 		result := &planpb.Expr{Expr: &planpb.Expr_AlwaysTrueExpr{AlwaysTrueExpr: &planpb.AlwaysTrueExpr{}}}

@@ -12,11 +12,11 @@ import (
 func checkGate(ctx context.Context, input AttemptInput, validateExpr func(*planpb.Expr) error) (bool, AttemptResult, error) {
 	report := Report{}
 	if ctx == nil {
-		result, err := newAbortResult(StageGate, report, merr.WrapErrServiceInternalMsg("predicate orchestration: missing request context"))
+		result, err := newAbortResult(StageSetup, report, merr.WrapErrServiceInternalMsg("predicate orchestration: missing request context"))
 		return false, result, err
 	}
 	if err := ctx.Err(); err != nil {
-		result, err := newAbortResult(StageGate, report, err)
+		result, err := newAbortResult(StageSetup, report, err)
 		return false, result, err
 	}
 	var missing string
@@ -29,12 +29,12 @@ func checkGate(ctx context.Context, input AttemptInput, validateExpr func(*planp
 		missing = "expression validator"
 	}
 	if missing != "" {
-		result, err := newFailureResult(ctx, StageGate, report,
+		result, err := newFailureResult(ctx, StageSetup, report,
 			merr.WrapErrServiceInternalMsg("predicate orchestration: missing %s", missing), false)
 		return false, result, err
 	}
 	if err := ctx.Err(); err != nil {
-		result, err := newAbortResult(StageGate, report, err)
+		result, err := newAbortResult(StageSetup, report, err)
 		return false, result, err
 	}
 	return true, AttemptResult{}, nil

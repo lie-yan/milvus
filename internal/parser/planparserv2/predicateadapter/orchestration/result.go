@@ -27,18 +27,16 @@ type Stage uint8
 const (
 	// No operation stage recorded.
 	StageUnknown Stage = iota
-	// Required input and context checks.
-	StageGate
-	// Runtime availability and translator setup.
+	// Required inputs, runtime acquisition and translator construction.
 	StageSetup
-	// Source coverage, graph construction and attempt-local associations.
+	// Source translation and attempt-local bindings.
 	StageImport
-	// Fresh candidate reconstruction.
+	// Immutable graph transformation.
+	StageRewrite
+	// Fresh executable candidate reconstruction.
 	StageExport
-	// Trusted parser placement check.
-	StagePlacement
-	// Final cancellation check and candidate transfer.
-	StageAcceptance
+	// Candidate validation and transfer to the caller.
+	StageValidate
 )
 
 // Diagnostic value copy; causes must not retain expressions, schemas or session state.
@@ -85,6 +83,6 @@ func newTranslatedResult(candidate *planpb.Expr, report Report) (AttemptResult, 
 	if candidate == nil {
 		return AttemptResult{}, merr.WrapErrServiceInternalMsg("predicate orchestration: missing accepted candidate")
 	}
-	report.Outcome, report.Stage, report.Cause = OutcomeTranslated, StageAcceptance, nil
+	report.Outcome, report.Stage, report.Cause = OutcomeTranslated, StageValidate, nil
 	return AttemptResult{candidate: candidate, report: report}, nil
 }
