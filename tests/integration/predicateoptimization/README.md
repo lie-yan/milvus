@@ -43,3 +43,20 @@ milvus-dev-cli go-integration local . -b master --allow-dirty \
   -t tests/integration/predicateoptimization \
   -k '^TestEmptyPipeline$/^(TestTouchstoneOptimizedExecutionParity|TestTouchstoneExecutionParity|TestOptimizedExecutionParity|TestExecutionParity)$'
 ```
+
+## Optimized delete parity
+
+`TestOptimizedDeleteParity` compares native Delete effects on fresh identical
+24-row collections with the switch off/on. It covers primary-key deletion,
+nullable filtering, the full simplifying touchstone and unsupported arithmetic.
+Independent expectations check mutation counts and Strong-consistency survivor
+IDs. Blank/true/Bloom rejection must leave rows intact; the enabled compound
+tautology must translate before always-true rejection. Receipts establish actual
+translation/retention and touchstone simplification. Scope is flushed/loaded data
+without explicit scalar indexes, not concurrent or growing-segment parity.
+
+```sh
+milvus-dev-cli go-integration local . -b master --allow-dirty \
+  -t tests/integration/predicateoptimization \
+  -k '^TestEmptyPipeline$/^TestOptimizedDeleteParity$'
+```
