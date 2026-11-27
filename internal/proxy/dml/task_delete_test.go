@@ -1223,7 +1223,7 @@ func (s *DeleteRunnerSuite) TestPredicateOptimizationPlanParity() {
 			s.mockCache.EXPECT().GetPartitions(mock.Anything, mock.Anything, mock.Anything).Return(map[string]int64{"part1": 100, "part2": 101}, nil)
 			calls := 0
 			var run func(context.Context, orchestration.AttemptInput, func(*planpb.Expr) error) (orchestration.AttemptResult, error)
-			patch := mockey.Mock(orchestration.RoundTrip).Origin(&run).To(func(ctx context.Context, in orchestration.AttemptInput, validate func(*planpb.Expr) error) (orchestration.AttemptResult, error) {
+			patch := mockey.Mock(orchestration.Optimize).Origin(&run).To(func(ctx context.Context, in orchestration.AttemptInput, validate func(*planpb.Expr) error) (orchestration.AttemptResult, error) {
 				calls++
 				result, err := run(ctx, in, validate)
 				s.Require().NoError(err)
@@ -1237,6 +1237,10 @@ func (s *DeleteRunnerSuite) TestPredicateOptimizationPlanParity() {
 			if enabled == "false" {
 				s.Zero(calls)
 				legacy = proto.Clone(dr.plan).(*planpb.PlanNode)
+				// Export drops resolved template bookkeeping; compare executable literals.
+				literal, err := planparserv2.CreateRetrievePlan(s.schema.SchemaHelper, "pk in [1, 2] and non_pk == 7", nil)
+				s.Require().NoError(err)
+				legacy.GetQuery().Predicates = literal.GetQuery().GetPredicates()
 				partitions = append([]int64(nil), dr.partitionIDs...)
 				s.Require().Len(partitions, 1)
 			} else {
@@ -1245,5 +1249,119 @@ func (s *DeleteRunnerSuite) TestPredicateOptimizationPlanParity() {
 				s.Equal(partitions, dr.partitionIDs)
 			}
 		})
+	}
+}
+
+// Exercises Init's post-rewrite guards and Run's dispatch without issuing mutations.
+func TestPredicateOptimizationDeleteRoutingAndSafety(t *testing.T) {
+	params := paramtable.Get()
+	item := &params.ProxyCfg.EnablePredicateOptimization
+	previous := item.GetValue()
+	defer params.Save(item.Key, previous)
+	schema := mustNewSchemaInfo(&schemapb.CollectionSchema{
+		Name: "delete_predicate_routes",
+		Fields: []*schemapb.FieldSchema{
+			{FieldID: 100, Name: "pk", DataType: schemapb.DataType_Int64, IsPrimaryKey: true},
+			{FieldID: 101, Name: "non_pk", DataType: schemapb.DataType_Int64},
+		},
+	})
+	builder, err := sbbf.NewBuilder(3, 0.001)
+	require.NoError(t, err)
+	builder.AddInt64(1)
+	bloom := builder.Marshal()
+	roaring, err := roaringfilter.Build([]int64{1, 2, 3})
+	require.NoError(t, err)
+	for _, tc := range []struct {
+		name, expr  string
+		blob        []byte
+		ids         []int64
+		unsupported bool
+		reject      string
+		becomesTrue bool
+	}{
+		{name: "pk equality", expr: "pk == 1", ids: []int64{1}},
+		{name: "pk set", expr: "pk in [1, 2, 3]", ids: []int64{1, 2, 3}},
+		{name: "general predicate", expr: "non_pk > 7"},
+		{name: "unsupported arithmetic", expr: "pk + 1 < 20", unsupported: true},
+		{name: "empty", expr: " ", reject: "empty or always true"},
+		{name: "literal true", expr: "true", reject: "empty or always true"},
+		{name: "tautology", expr: "not (pk == 1 and pk == 2)", becomesTrue: true},
+		{name: "approximate membership", expr: "membership_match(pk, {filter}, type=bloom)", blob: bloom, unsupported: true, reject: "approximate bloom filter blob"},
+		{name: "nested approximate membership", expr: "pk == 1 and membership_match(pk, {filter}, type=bloom)", blob: bloom, unsupported: true, reject: "approximate bloom filter blob"},
+		{name: "exact membership", expr: "membership_match(pk, {filter}, type=roaring)", blob: roaring, unsupported: true},
+	} {
+		var original *planpb.Expr
+		for _, enabled := range []string{"false", "true"} {
+			t.Run(tc.name+"/"+enabled, func(t *testing.T) {
+				require.NoError(t, params.Save(item.Key, enabled))
+				cache := NewMockCache(t)
+				cache.EXPECT().GetDatabaseInfo(mock.Anything, mock.Anything).Return(&databaseInfo{DBID: 0}, nil)
+				cache.EXPECT().GetCollectionID(mock.Anything, mock.Anything, mock.Anything).Return(int64(111), nil)
+				cache.EXPECT().GetCollectionInfo(mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(deleteCollectionInfo(schema), nil)
+				dr := &DeleteRunner{metaCache: cache, req: &milvuspb.DeleteRequest{CollectionName: schema.Name, Expr: tc.expr}}
+				if tc.blob != nil {
+					dr.req.ExprTemplateValues = map[string]*schemapb.TemplateValue{"filter": {Val: &schemapb.TemplateValue_BytesVal{BytesVal: tc.blob}}}
+				}
+				calls := 0
+				var run func(context.Context, orchestration.AttemptInput, func(*planpb.Expr) error) (orchestration.AttemptResult, error)
+				observer := mockey.Mock(orchestration.Optimize).Origin(&run).To(func(ctx context.Context, in orchestration.AttemptInput, validate func(*planpb.Expr) error) (orchestration.AttemptResult, error) {
+					calls++
+					result, err := run(ctx, in, validate)
+					require.NoError(t, err)
+					if tc.unsupported {
+						require.Equal(t, orchestration.OutcomeUnsupported, result.Outcome())
+					} else {
+						require.Equal(t, orchestration.OutcomeTranslated, result.Outcome())
+						if tc.becomesTrue {
+							require.Nil(t, in.Original.GetAlwaysTrueExpr())
+							require.NotNil(t, result.Candidate().GetAlwaysTrueExpr())
+						}
+					}
+					return result, err
+				}).Build()
+				defer observer.UnPatch()
+				err := dr.Init(context.Background())
+				if enabled == "true" && tc.name != "empty" {
+					require.Equal(t, 1, calls)
+				} else {
+					require.Zero(t, calls)
+				}
+				rejection := tc.reject
+				if tc.becomesTrue && enabled == "true" {
+					rejection = "empty or always true"
+				}
+				if rejection != "" {
+					require.ErrorContains(t, err, rejection)
+					require.Nil(t, dr.result, "rejection must precede execution setup")
+					return
+				}
+				require.NoError(t, err)
+				if enabled == "false" {
+					original = proto.Clone(dr.plan.GetQuery().GetPredicates()).(*planpb.Expr)
+				}
+				route := ""
+				simple := mockey.Mock((*DeleteRunner).simpleDelete).To(func(got *DeleteRunner, _ context.Context, ids *schemapb.IDs, n int64) error {
+					route = "simple"
+					require.Same(t, dr, got)
+					require.Equal(t, tc.ids, ids.GetIntId().GetData())
+					require.Equal(t, int64(len(tc.ids)), n)
+					return nil
+				}).Build()
+				defer simple.UnPatch()
+				complex := mockey.Mock((*DeleteRunner).complexDelete).To(func(got *DeleteRunner, _ context.Context) error {
+					route = "query"
+					require.Same(t, dr, got)
+					require.True(t, proto.Equal(original, got.plan.GetQuery().GetPredicates()), "query-assisted routing must preserve this fixture predicate")
+					return nil
+				}).Build()
+				defer complex.UnPatch()
+				require.NoError(t, dr.Run(context.Background()))
+				if tc.ids != nil {
+					require.Equal(t, "simple", route)
+				} else {
+					require.Equal(t, "query", route)
+				}
+			})
+		}
 	}
 }
